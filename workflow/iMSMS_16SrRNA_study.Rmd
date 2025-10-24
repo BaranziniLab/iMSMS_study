@@ -1,0 +1,200 @@
+---
+title: "iMSMS 16S rRNA study"
+author: "Xiaoyuan Zhou, PhD"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Project Overview
+The internation multiple sclerosis microbiome study ([iMSMS](imsms.org)) is an international collaboration to investigate the role of gut microbiome in multiple sclerosis (MS). Here we present the microbiome composition study (by 16s rRNA data) in 576 pairs of MS patients and houshold healthy controls (HHC) recruited in US, south America and Europe. 
+
+#Method - 16s rRNA sequencing 
+The V4 region of the bacteria 16S ribosomal RNA gene was amplified on an Illumina MiSeq platform using the Earth Microbiome Project protocol. Amplicon reads from two cohort samples ([EMBL-ENA](https://www.ebi. ac.uk)  repository, accession number ERP115476) were analyzed using [QIITA](https://qiita.ucsd.edu/) to combine the forward and reverse reads, trim short reads of less than 150bp and assign filtered reads to amplicon sequencing reads (ASVs) using default Deblur parameters against Greengenes (version 13.8 at 99% identity) as described in QIIME2 documents. As the impact of sample collection method on microbial composition is negligible, sequencing counts of samples from each participant were summed. ASVs were filtered to retain only the ones covering at least 10 total reads for downstream analyses. 
+
+# Settings
+## load packages
+```{r message=FALSE, warning=FALSE}
+require("gdata")
+require("readxl")
+require("vegan")
+require("ggplot2")
+```
+
+## Set ggplot theme
+```{r}
+theme_set(theme_bw() +
+            #eliminates background, gridlines, and chart border
+            theme(text = element_text(size=15),
+                  plot.title =  element_text(size = 12, face = "bold",hjust = 0.5),
+                  axis.line = element_line(colour = "black",size =0.5),
+                  plot.background = element_blank()
+                  ,panel.grid.major = element_blank()
+                  ,panel.grid.minor = element_blank(),
+                  axis.text.x = element_text(colour = "black"),
+                  axis.text.y = element_text(colour = "black"),
+                  panel.border =  element_blank()))
+#                  panel.border = element_rect(size =0)))
+```
+
+## Set colors for group
+```{r}
+disease_course.cols = c(Control = "#74add1",SPMS = "#a50026" , RRMS = "#f6b56e",PPMS = "#5b0a0a", PMS = "#FFBF74",MS ="#a50026" )
+disease_course_control.cols = c(Control_RRMS = "#74add1",RRMS = "#f6b56e",Control_SPMS = "#74add1", SPMS = "#a50026" ,Control_PPMS = "#74add1", PPMS = "#5b0a0a", PMS = "#FFBF74",MS ="#a50026")
+disease.cols = c(Control = "#74add1",MS= "#a50026")
+Site.cols = c("San Francisco" = "#8c510a", "Boston" = "#bf812d", "New York" = "#dfc27d", "Pittsburgh" = "#c7eae5", "Buenos Aires" = "#80cdc1", "Edinburgh" = "#35978f", "San Sebastian" = "#01665e")
+ 
+color.list = list(disease_course = disease_course.cols,
+                  disease = disease.cols,
+                  site = Site.cols,
+                  disease_course_control = disease_course_control.cols)
+```
+
+##Set levels for group
+```{r}
+group.levels = list(disease_course = c("Control", "RRMS", "SPMS", "PPMS"), 
+                    site =c("San Francisco","Boston","Mount Sinai","Pittsburgh", "Buenos Aires", "Edinburgh","San Sebastian"),
+                    disease = c("Control", "MS"),
+                    disease_course_control = c("Control_RRMS", "RRMS", "Control_PMS","PMS"))
+```
+
+# 1. Load data (included in rdata and supplementary)
+```{r  message=FALSE, warning=FALSE}
+#load all data
+#rdata.files =list.files(path = "rdata",full.names = T)
+#lapply(rdata.files,load,.GlobalEnv)
+
+# load data for 16S rRNA analysis
+load("rdata/seqmeta.rda") #meta data for 1152 samples
+load("rdata/asv.rda") # Non-filtered ASV counts
+load("rdata/diversity.rda") #alpha-diversity of 1000 samples
+load("rdata/weight.rda") #weighted UniFrac distance of 1000 samples
+```
+
+# 2. Microbial diversity
+Microbial divesity was measured using [QIIME2](https://qiime2.org/). 
+```{sh eval=FALSE}
+biom convert -i Deblur_all_feature-table-1152samples_10reads_filtered_rep_seqs.txt -o Deblur_all_feature-table-1152samples_10reads_filtered_rep_seqs.biom --to-hdf5 --table-type="OTU table" --process-obs-metadata taxonomy
+
+qsub scripts/qiime2_diversity.sh
+```
+
+## 2.1 Plot of alpha-diversity
+```{r}
+source("scripts/diversity_plot.R")
+# plot diversity by disease status (MS and HHC)
+diversity.res = diversity_plot(diversity =diversity, meta=seqmeta, group = "disease",levels = group.levels, color = color.list,plot.type ="boxplot", angle = 0, width =7, height =6,out.dir ="results/")
+
+#plot diversity by disease subtype (RRMS, PMS and corresponding HHC)
+diversity.res = diversity_plot(diversity =diversity, meta=seqmeta, group = "disease_course_control",levels = group.levels, color = color.list,plot.type ="boxplot", angle = 0, width =7, height =6,out.dir ="results/")
+
+#plot diversity by recruiting site
+diversity.res = diversity_plot(diversity =diversity, meta=seqmeta, group = "site",levels = group.levels, color = color.list,plot.type ="boxplot", angle = 0, width =7, height =6,out.dir ="results/")
+```
+
+## 2.1 PERMANOVA test
+### 2.1.1 Test the difference of beta-diversity related to disease status, treatment status, as shown in PCA plot of Figure 1.
+```{r eval =FALSE}
+# define function for paired and unpaired PERMANOVA test
+paired.adonis = function(x = weight,meta, factor = "disease", p.adjust.m ='bonferroni',strata = NULL)
+{
+  # require("vegan")
+  co = combn(unique(meta[,factor]),2)
+  pairs = c()
+  F.Model =c()
+  R2 = c()
+  p.value = c()
+  
+  for(elem in 1:ncol(co)){
+      meta.selec = meta[meta[,factor] %in% c(co[1,elem],co[2,elem]),]
+      if(!is.null(strata)){
+        str =  meta.selec[,strata]
+      }else{
+        str = strata
+      }
+      ad = vegan::adonis(x[match( meta.selec[,1],rownames(x)), match(meta.selec[,1],colnames(x))] ~meta.selec[,factor], strata = str)
+    pairs = c(pairs,paste(co[1,elem],'vs',co[2,elem]));
+    F.Model =c(F.Model,ad$aov.tab[1,4]);
+    R2 = c(R2,ad$aov.tab[1,5]);
+    p.value = c(p.value,ad$aov.tab[1,6])
+  }
+  p.adjusted = p.adjust(p.value,method=p.adjust.m)
+  pairw.res = data.frame(pairs,F.Model,R2,p.value,p.adjusted)
+  return(pairw.res)
+}
+
+# run the test, factor can be "disease", "disease_course_control" or "treatment_control"
+res.paired = paired.adonis(weight,meta=seqmeta[seqmeta$iMSMS_ID %in% colnames(weight), ], factor = "treatment_control", p.adjust.m ='bonferroni',strata ="household")
+res.paired =res.paired[!is.na(res.paired$p.adjusted),]
+
+res.unpaired = paired.adonis(weight,meta=seqmeta[seqmeta$iMSMS_ID %in% colnames(weight), ], factor = "treatment_control", p.adjust.m ='bonferroni',strata = NULL)
+res.unpaired = res.unpaired[!res.unpaired$pairs %in% res.paired$pairs,]
+res = rbind(res.paired, res.unpaired)
+res$p.adjusted = p.adjust(res$p.value,method= "fdr")
+res # results will be slightly different in different runs because of the permutations
+```
+
+### 2.1.2 Estimate the effect of confounding factors on microbiome composition
+```{r eval =F}
+# read the confounding factors and description
+termgroup = read.xls("Supplementary_datasets/Confounding_factors_termgroup.xlsx",sheet =1, as.is=T, head=T)
+confounder.anova= seqmeta[,c("iMSMS_ID", termgroup$Term) ]
+confounder.anova$age = as.numeric(confounder.anova$age)
+confounder.anova$bmi = as.numeric(confounder.anova$bmi)
+
+names = termgroup$Term
+names
+
+adonis.res = list()
+method= "unifrac"
+# run PERMANOVA test on weighted uniFrac distance
+for(i in 1:length(names)){
+  confounder2 = confounder.anova[confounder.anova$iMSMS_ID %in% rownames(weight),]
+  confounder2 = confounder2[!is.na(confounder2[,i+1]) & confounder2[,i+1] != "", ]
+  
+  if(method =="bray"){
+    abun = weight[rownames(weight) %in% confounder2$iMSMS_ID, ]
+    dis = vegdist(abun, method = "bray",diag =T, upper =T)
+  }else{
+    dis = weight[match(confounder2$iMSMS_ID, rownames(weight)), match(confounder2$iMSMS_ID, colnames(weight))]
+  }
+  adonis.res[[i]] = vegan::adonis(as.formula(paste("dis ~",names[i], sep = "")), data = confounder2)
+}
+names(adonis.res) = c(names)
+# extract the R2 and Pvalue
+result = matrix(NA, nrow = length(names), ncol =2)
+for(i in 1:(length(names))){
+  result[i,1] = adonis.res[[i]]$aov.tab$R2[1]
+  result[i,2] = adonis.res[[i]]$aov.tab$`Pr(>F)`[1]
+}
+rownames(result) = c(names)
+colnames(result) = c("R2", "Pvalue")
+result = data.frame(result, stringsAsFactors = F)
+result$Padjust = p.adjust(result$Pvalue, method = "fdr")
+
+result$ID = rownames(result)
+for(i in 1:nrow(result)){
+    result$Group[i] = termgroup[termgroup$Term == result$ID[i], "Group"]
+}
+
+```
+
+### 2.1.3 Barplot effect size of PERMANOVA
+```{r}
+#permanova.res =read.xls("Supplementary_datasets/Supplementary Dataset S5.xlsx",sheet =4, head=T,as.is=T)
+load("rdata/permanova.res.rda")
+
+presult = permanova.res[permanova.res$Pvalue < 0.05,]
+padj.result = permanova.res[permanova.res$Padjust < 0.05,]
+anova.cols = c("Demography" = "#0571B0", "Disease"="#CCCCCC", "Life style" ="#92C5DE", "Medication"="#F4A582", "Physiology"="#CA0020")
+ggplot(permanova.res, aes(x = reorder(ID, R2),y=R2, fill = Group)) +
+  geom_bar(stat='identity') +
+  coord_flip() + ylab("Adonis R2") + xlab("") +
+  scale_fill_manual(values = anova.cols) +
+  geom_text(data = presult, aes(ID, R2),label="*", col= "black",nudge_y = 0.005, nudge_x = -0.15)+
+  geom_text(data = padj.result, aes(ID, R2),label="*", col= "red",nudge_y = 0.01,nudge_x = -0.15)
+```

@@ -1,0 +1,667 @@
+---
+title: "MIDAS"
+author: "Xiaoyuan"
+date: "11/6/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# MIDAS
+## 1. Run MIDAS bash commands
+```{bash}
+<!-- Run MIDAS  -->
+<!-- An example, input1, 71802.0066_R1.fastq.gz, input2, 71802.0066_R2.fastq.gz -->
+<!-- mkdir iMSMS_midas -->
+<!-- run_midas.py species iMSMS_midas -1 ${input1} -2 ${input2}  -->
+<!-- run_midas.py genes iMSMS_midas -1 ${input1} -2 ${input2}   -->
+<!-- run_midas.py snps iMSMS_midas -1 ${input1} -2 ${input2} -->
+<!-- ssh midas.sh -->
+
+# run MIDAS merge
+merge_midas.py snps midas_snps_site_depth_5 -i midas_subject -t dir --site_depth 5 >> merge_midas_site_depth5.log &
+
+merge_midas.py snps midas_snps -i midas_batch1 -t dir >> merge_midas_site_depth5.log
+merge_midas.py genes  midas_genes  -i  midas_subject -t dir
+merge_midas.py species midas_species -i midas_subject -t dir
+
+# compare the genome distance between each sample pair
+for FILE in $(ls midas_genes/)
+do  compare_genes.py midas_genes/$FILE --out compare_gene/$FILE\_distances.txt
+done
+
+#Quantify within-sample heterogenity genome-wide
+for FILE in $(ls midas_snps)
+do snp_diversity.py  midas_snps/$FILE --genomic_type genome-wide --sample_type per-sample --out  snp_diversity/$FILE\_within_sample_genome_wide ;
+
+#Quantify between-sample heterogenity genome-wide
+snp_diversity.py  midas_snps/$FILE --genomic_type genome-wide --sample_type pooled-samples --out snp_diversity/$FILE\_between_sample_genome_wide
+
+#Quantify between-sample heterogenity per-gene
+snp_diversity.py midas_snps/$FILE --genomic_type per-gene --sample_type pooled-samples --out snp_diversity/$FILE\_between_sample_one_gene
+done
+
+call_consensus.py midas_merge_snps/$FILE   --out genome_consensus/$FILE\_consensus --site_maf 0.01 --site_depth 5 --site_prev 0.90 --sample_depth 5 --sample_cov 0.40 --site_ratio 5.0
+
+# build a tree
+FastTree -gtr -nt <  Akkermansia_muciniphila_55290_consensus2 > Akkermansia_muciniphila_55290_consensus2.tree
+```
+
+## 2. MIDAS summry
+### 2.1 Species relative abundance and coverage
+```{r}
+# Relative abundance and coverage
+species.coverage = read.table("results/WOL_shogun/MIDAS/midas_species/coverage.txt",head=T,as.is=T ,check.names = F, row.names = 1)
+species.coverage = melt(as.matrix(species.coverage ))
+colnames(species.coverage) = c("Species", "iMSMS_ID", "Coverage")
+species.abundance = read.table("results/WOL_shogun/MIDAS/midas_species/relative_abundance.txt",head=T,as.is=T,check.names = F, row.names = 1)
+
+species.abundance  = melt(as.matrix(species.abundance))
+colnames(species.abundance) = c("Species", "iMSMS_ID", "Relab_abun")
+species.midas = cbind(species.abundance, species.coverage[,3,drop=F])
+
+#ggplot(species.midas, aes(x = Relab_abun, y = Coverage, color = Species)) + geom_point()
+
+# select the MS associated bacteria
+sign.species =read.xls("results/WOL_shogun/humann2/Linear_regression/disease/all/Linear_coefficient_metagenomics_species_MS_all_sex_age_bmi_fixed_house_site_random.xlsx",sheet =1 ,head=T,as.is=T)
+
+sign.species = sign.species[sign.species$fdr_diseaseMS < 0.05,"taxonomy" ]
+sign.species= gsub("^.*s__", "", sign.species)
+
+species.midas.select = species.midas[grepl(paste(sign.species, collapse = "|"), species.midas$Species),]
+
+# coverage and relative abundance
+ggplot(species.midas.select, aes(x = Relab_abun,y = Coverage, color = Species)) + geom_point()
+
+# Akkermansia 
+species.midas.akk = species.midas[species.midas$Species  %in% "Akkermansia_muciniphila_55290",]
+ 
+species.midas.akk = species.midas.akk[rowSums(species.midas.akk[,3:4]) > 0,]
+species.midas.akk$iMSMS_ID = gsub("_midas", "",species.midas.akk$iMSMS_ID )
+species.midas.akk = species.midas.akk[species.midas.akk$iMSMS_ID %in% rownames(map), ]
+
+species.midas.akk$disease = sapply(species.midas.akk$iMSMS_ID, function(x){
+  if(grepl("01[.]", x)){
+    y = "MS"
+  }else{
+    y ="Control"
+  }
+  y
+})
+# lable the samples with SNPS
+for(i in 1:nrow(species.midas.akk)){
+  species.midas.akk$iMSMS_ID[i] = ifelse(species.midas.akk$iMSMS_ID[i] %in% colnames(akk.snp),species.midas.akk$iMSMS_ID[i] , "" )
+}
+
+require(ggrepel)
+ggplot(species.midas.akk, aes(x = Relab_abun,y = Coverage, color = disease)) + geom_point() +  geom_label_repel(aes(label = species.midas.akk$iMSMS_ID), size = 2.5) + scale_color_manual(values =disease.cols)
+```
+
+
+### 2.2 Heatmap of SNPs and genes
+#### 2.2.1 SNP-gene-func
+```{r}
+organisms = list.files(pattern = ".tree", path= "results/WOL_shogun/MIDAS/genome_consensus/")
+organisms = gsub("_consensus.tree", "", organisms)
+
+organism = organisms[1]
+snp.gene =read.table(paste("results/WOL_shogun/MIDAS/", organism,"/centroid_functions.txt",sep=""),head=T,as.is=T,sep="\t")
+
+snp.func = lapply(c(paste("results/WOL_shogun/MIDAS/", organism, "/path.txt",sep=""), paste("results/WOL_shogun/MIDAS/",organism, "/ec.txt",sep=""), paste("results/WOL_shogun/MIDAS/",organism,  "/figfam.txt",sep=""),paste("results/WOL_shogun/MIDAS/", organism, "/go.txt",sep="")), function(x){
+  y = read.csv(x, head=F, as.is=T,sep="\t", colClasses = "character")
+  y
+})
+
+snp.func= do.call("rbind", snp.func)
+colnames(snp.func) = c("function_id", "func")
+snp.gene.func = merge(snp.gene, snp.func, by = "function_id")
+```
+
+#### 2.2.2 SNP
+```{r}
+# read the SNPs(n =77643)  
+# read SNPs
+midas.snp = read.table(paste("results/WOL_shogun/MIDAS/midas_snps/", organism, "/snps_freq.txt",sep=""),head=T,as.is=T,row.names=1,check.names = F)
+colnames(midas.snp) = gsub("_midas", "", colnames(midas.snp))
+
+snp.info =read.table(paste("results/WOL_shogun/MIDAS/midas_snps/",organism,"/snps_info.txt",sep=""),head=T,as.is=T,sep="\t")
+## keep only CDS gene and SNPs present in more than 25% samples
+midas.snp10 = midas.snp[rowSums(midas.snp > 0 ) >= 0.1*ncol(midas.snp),]
+midas.snp10 = midas.snp10[,colnames(midas.snp10) %in% rownames(map)]
+midas.snp10 = midas.snp10[rownames(midas.snp10) %in% snp.info[snp.info$locus_type == "CDS", "site_id"],]
+# meta data for SNP samples
+midas.snp.meta = map[match(colnames(midas.snp10), rownames(map)), ]
+midas.snp.meta$smoke[midas.snp.meta$smoke == ""] = "unknown"
+
+# add HEI
+load("../Dietary_questionnaires_round2/rdata/heiseq.rda")
+heiseq$iMSMS_ID = gsub("-",".",heiseq$iMSMS_ID)
+for(i in 1:nrow(midas.snp.meta)){
+  if(midas.snp.meta$iMSMS_ID[i] %in% heiseq$iMSMS_ID){
+    midas.snp.meta$HEI2015[i] = heiseq[heiseq$iMSMS_ID %in% midas.snp.meta$iMSMS_ID[i], "HEI2015_TOTAL_SCORE"]
+  }else{
+    NA
+  }
+}
+
+midas.snp.meta2 = midas.snp.meta
+midas.snp.meta2= merge(midas.snp.meta2, heiseq[,grepl("iMSMS|HEIY|HEI2015",colnames(heiseq))], by = "iMSMS_ID")
+```
+
+##### SNP cluster heatmap
+```{r}
+# build the SNP heatmap and find the sample clusters and SNP clusters
+my.breaks <- c(seq(0, 1, by=0.01))
+snp.hm = pheatmap(t(midas.snp10), show_colnames = F,cutree_rows = 3, color =colorRampPalette(brewer.pal(n = 9, name = "YlGnBu"))(length(my.breaks )),breaks = my.breaks )
+
+sample.cls  = cutree(snp.hm$tree_row, 3)
+midas.snp.meta$cluster = sample.cls[match(midas.snp.meta$iMSMS_ID, names(sample.cls))]
+
+# exchange clusters
+midas.snp.meta$cluster = gsub("1", "cluster2", midas.snp.meta$cluster)
+midas.snp.meta$cluster = gsub("^2", "cluster3", midas.snp.meta$cluster)
+midas.snp.meta$cluster = gsub("^3", "cluster1", midas.snp.meta$cluster)
+
+
+ # check the correlation of three clusters and phenotypes
+vars = colnames(midas.snp.meta)
+vars = vars[!vars %in% c("iMSMS_ID", "household", "ethinicity", "year_of_onset","weigth", "height", "diet_special_needs","children_number","roommates","allergy_specific","eating_disorder", "type2diabetes" )]
+vars.res =lapply(vars ,function(x){
+  data =midas.snp.meta[midas.snp.meta[,x] != "", ]
+  y = cor.test(as.numeric(as.factor(data[,x])), as.numeric(as.factor(data[,"cluster"])))
+  y = data.frame(Coef = y$estimate, Pvalue= y$p.value)
+  y
+})
+
+names(vars.res) = vars
+test= do.call("rbind",vars.res)
+### plot age/BMI/edss/EDSS score of the clusters
+vars = c("age", "bmi", "uGMSSS", "HEI2015")
+ylabs = c("Age", "Body mass index", "MS severity score", "Healthy eating index")
+g =  list()
+for( i in 1:4){
+  g[[i]] = ggplot(midas.snp.meta, aes_string(x = "cluster",y = vars[i])) + geom_boxplot() + xlab("") + ylab(ylabs[i]) + geom_jitter(shape=16, position=position_jitter(0.1))
+}
+grid.arrange(grobs = g, nrow =2)
+
+aov.res = lapply(c("age", "bmi", "uGMSSS", "HEI2015"),function(x){ 
+  r = aov(as.formula(paste(x, "~ cluster", sep="")),midas.snp.meta)
+  r2=TukeyHSD(r)
+  r2})
+
+
+g = lapply(colnames(midas.snp.meta2)[58:71],function(x){
+  ggplot(midas.snp.meta2, aes_string(x = "cluster",y = x)) + geom_boxplot() + xlab("") +ylab(x) + geom_jitter( shape=16, position=position_jitter(0.1))
+})
+
+# plot the relative abundance of Akkermansia in the sample clusters
+rownames(midas.snp.meta) = midas.snp.meta$iMSMS_ID
+midas.humann2 = merge(midas.snp.meta, t(humann2.taxa.average[[6]]), by = "row.names")
+colnames(midas.humann2)[grepl("muciniphila",colnames(midas.humann2))] = "Akkermansia_muciniphila"
+
+ggplot(midas.humann2, aes_string(x = "cluster",y = "Akkermansia_muciniphila")) + geom_boxplot(aes(colour = disease), outlier.size = NA,outlier.shape = NA,fill =NA) + xlab("") + ylab("Akkermansia muciniphila (%)" ) + geom_jitter(aes(colour = disease), shape=16, position=position_jitterdodge(0.2)) + scale_color_manual(values= disease.cols)
+
+## heatmap ##########
+annotation = data.frame(probiotics  = factor(midas.snp.meta$probiotics), allergy = factor(midas.snp.meta$allergies),  nsaids =factor(midas.snp.meta$nsaids)  ,treatment = factor(midas.snp.meta$treatment_status), disease = factor(midas.snp.meta$disease_course),sex = factor(midas.snp.meta$sex),site = factor(midas.snp.meta$site), cluster = factor(midas.snp.meta$cluster))
+rownames(annotation) = colnames(midas.snp10)
+
+anno_cols = list(disease = disease_course.cols[c(1,3,2,4)], site = Site.cols, treatment =c("Control" = "white", "Off" = "grey", "Treated" = "black"), sex = sex.cols,  nsaids= c( "0" = "white", "1" = "black"),  allergy =c("0" = "white","1" = "black"),probiotics =c( "0" = "white","1" = "black"),cluster=c("cluster1" ="#7fc97f", "cluster2" = "#beaed4", "cluster3" = "#fdc086"))
+
+my.breaks <- c(seq(0, 1, by=0.01))
+snp.hm = pheatmap(t(midas.snp10), annotation_row = annotation, annotation_colors = anno_cols, show_colnames = F,cutree_rows = 3,color =colorRampPalette(brewer.pal(n = 9, name = "YlGnBu"))(length(my.breaks )),breaks = my.breaks )
+
+snp.hm = pheatmap(t(midas.snp10), annotation_row = annotation, annotation_colors = anno_cols, show_colnames = F,cutree_rows = 3,cutree_cols = 5, color =colorRampPalette(brewer.pal(n = 9, name = "YlGnBu"))(length(my.breaks )),breaks = my.breaks )
+```
+
+##### Phylogenetic tree
+```{r}
+require(ape)
+require(ggtree)
+tree =read.tree(paste("results/WOL_shogun/MIDAS/genome_consensus/", organism, "_consensus.tree",sep=""))
+tree$tip.label = gsub("_midas", "", tree$tip.label)
+tree = keep.tip(tree, tip = midas.snp.meta$iMSMS_ID)
+
+tree.files =list.files("results/WOL_shogun/MIDAS/genome_consensus/",pattern= ".tree",full.names = T)
+organisms = gsub("results/WOL_shogun/MIDAS/genome_consensus//", "", tree.files)
+organisms = gsub("_consensus.tree", "", organisms)
+
+for(i in 2:length(tree.files)){
+  tree =read.tree(tree.files[i])
+      tree$tip.label = gsub("_midas", "", tree$tip.label)
+  tree = keep.tip(tree, tip = map$iMSMS_ID[map$iMSMS_ID %in% tree$tip.label])
+  if(length(tree$tip.label) > 1){
+    #par(mar = c(3,5,5,5))
+   g = ggtree(tree)+ geom_tiplab(size=3)+ ggtitle(organisms[i])+
+     coord_cartesian(clip = 'off') + 
+     theme_tree2(plot.margin=margin(6,120, 6, 6))
+   ggsave(g, file= paste(dir.out, organisms[i],"_tree.pdf",sep=""))
+  }
+}
+
+#
+groupInfo =lapply(unique(midas.snp.meta$cluster), function(x){
+  y = midas.snp.meta[midas.snp.meta$cluster %in% x, 1]
+  y
+})
+names(groupInfo) = unique(midas.snp.meta$cluster)
+tree = groupOTU(tree, groupInfo)
+ ggtree(tree, aes(color=group)) + geom_tiplab(size=2)+ scale_color_manual(values = c( "black", "cluster1" ="#7fc97f", "cluster2" = "#beaed4", "cluster3" = "#fdc086"))
+ 
+ 
+ #### group the tree
+  enrichment= matrix(NA, nrow =length(organisms), ncol =3)
+  
+ for(t in 1:length(tree.files)){
+ tree =read.tree(tree.files[t])
+      tree$tip.label = gsub("_midas", "", tree$tip.label)
+  tree = keep.tip(tree, tip = map$iMSMS_ID[map$iMSMS_ID %in% tree$tip.label])
+
+  if(is.null(tree)){
+    enrichment[t,] = 1
+  }else if(tree$Nnode <= 3 ){
+     enrichment[t,] = 1
+     }else{
+      library(phylogram)
+  tree.dendrogram = as.dendrogram(tree)
+     clusters = cutree(tree.dendrogram, k = 3)[order.dendrogram(tree.dendrogram)]
+  
+  cluster.meta = list( cluster1 = seqmeta[seqmeta$iMSMS_ID %in% names(clusters[clusters == 1]),], cluster2 = seqmeta[seqmeta$iMSMS_ID %in% names(clusters[clusters == 2]),],cluster3 = seqmeta[seqmeta$iMSMS_ID %in% names(clusters[clusters == 3]),],all = seqmeta[seqmeta$iMSMS_ID %in% names(clusters),])
+  # check for MS enrichment
+ 
+  for(i in 1:3){
+    p = table(cluster.meta[[i]]$disease)[names(table(cluster.meta[[i]]$disease))== "MS"]
+    if(length(p) == 0){
+      p = 1
+    }
+    m = table(cluster.meta[[4]]$disease)[names(table(cluster.meta[[4]]$disease))== "MS"]
+        if(length(m) == 0){
+      m = 0
+    }
+    
+    n = table(cluster.meta[[4]]$disease)[names(table(cluster.meta[[4]]$disease)) != "MS"]
+            if(length(n) == 0){
+      n = 0
+    }
+    k = nrow(cluster.meta[[i]])
+    enrichment[t,i] =phyper(p -1, m, n, k)
+  }
+  }
+
+ }
+  
+ 
+```
+
+##### SNP cluster function
+```{r}
+# cluster snps and functional enrichment
+snp.cls =cutree(snp.hm$tree_col, 5)
+snp.cls2 = lapply(c(1:5),function(x){
+  names(snp.cls[snp.cls == x])})
+snp.cls.gene =lapply(c(1:5),function(x){
+  y = names(snp.cls[snp.cls == x])
+  y  = snp.info[snp.info$site_id %in% y, "gene_id"]
+  y = unique(y)
+  y
+})
+
+enrich.kegg = data.frame(table(snp.gene.func[!snp.gene.func$ontology %in% "ec", "func"]))
+snp.gene.func$id = paste(snp.gene.func$ontology, snp.gene.func$function_id, sep=":")
+colnames(enrich.kegg) = c("func","allNum")
+for(i in 1:nrow(enrich.kegg)){
+  enrich.kegg$id[i] = snp.gene.func[snp.gene.func$func ==enrich.kegg$func[i],"id"][1]
+}
+
+enrich.kegg$all = nrow(midas.gene)
+enrich.kegg = enrich.kegg[,c("func","id", "allNum","all")]
+
+snp.cls.gene.func = lapply(snp.cls.gene, function(x){
+  func = snp.gene.func[snp.gene.func$gene_id %in% x, ]
+  func = data.frame(table(func[!func$ontology %in% "ec", c("func")]))
+  colnames(func) = c("func", "select")
+  func$selectNum = length(x)
+  func = merge(enrich.kegg,func, by = "func")
+  func$P.value = apply(func[,3:6], 1, function(x)
+      phyper(as.numeric(x[3])-1,as.numeric(x[1]),
+             as.numeric(x[2])-as.numeric(x[1]),as.numeric(x[4]),lower.tail=FALSE)) 
+  func$p.adjust = p.adjust(func$P.value, method = "fdr")
+  func = func[order(func$P.value, decreasing = F), ]
+  func
+})
+snp.cls.gene.funcsign = lapply(snp.cls.gene.func,function(x){
+  x[x$P.value < 0.05, ]
+})
+### result: only the smallest cluster has enriched function but not unique compared to other clusters
+
+# check the ECs for the SNP clusters
+snp.cls.ec  =lapply(snp.cls.gene,function(x){
+  data = data.frame(gene_id = x,stringsAsFactors = F)
+  data  =merge(data,snp.gene[snp.gene$ontology == "ec", ], by = "gene_id")
+  # data = data[data$ontology =="kegg", ]
+  for(i in 1:nrow(data)){
+  data$func[i] = ifelse(data$function_id[i] %in% snp.func[,1], snp.func[snp.func[,1] ==data$function_id[i], 2], "")
+  } 
+  data
+})
+
+snp.cls.ec = lapply(snp.cls.ec, function(x){
+  y = table(x$func)
+  y = y[order(y,decreasing = T)]
+  y
+})
+
+snp.cls.ec.num = lapply(snp.cls.ec, names)
+names(snp.cls.ec.num) = paste("SNP_cluster",1:5,sep="" )
+
+VennDiagram::venn.diagram(snp.cls.ec.num, fill = brewer.pal(5, "Dark2"),filename = paste("results/WOL_shogun/MIDAS/", organism, "/SNP_cluster_EC_vennDiagram.tiff",sep=""), alpha= rep(0.5,5), main.cex = 1, sub.cex=1.5, cat.cex=1,  cat.default.pos ="outer", cat.pos = c(0,0,-120, 120,0))
+diff.ecs = lapply(1:length(snp.cls.ec.num), function(n) setdiff(snp.cls.ec.num[[n]], unlist(snp.cls.ec.num[-n])))
+
+
+# check pathways of snp clusters 
+snp.cls.path  =lapply(snp.cls.gene,function(x){
+  data = data.frame(gene_id = x,stringsAsFactors = F)
+  data  =merge(data,snp.gene[snp.gene$ontology == "go", ], by = "gene_id")
+  # data = data[data$ontology =="kegg", ]
+  for(i in 1:nrow(data)){
+  data$func[i] = ifelse(data$function_id[i] %in% snp.func[,1], snp.func[snp.func[,1] ==data$function_id[i], 2], "")
+  } 
+  data
+})
+
+snp.cls.path = lapply(snp.cls.path, function(x){
+  y = table(x$func)
+  y = y[order(y,decreasing = T)]
+  y
+})
+snp.cls.path.num = lapply(snp.cls.path, names)
+
+names(snp.cls.path.num) = paste("SNP_cluster",1:5,sep="" )
+library(VennDiagram)
+VennDiagram::venn.diagram(snp.cls.path.num, fill = brewer.pal(5, "Dark2"),filename = paste("results/WOL_shogun/MIDAS/", organism, "/SNP_cluster_pathways_vennDiagram.tiff",sep=""), alpha= rep(0.5,5), main.cex = 1, sub.cex=1.5, cat.cex=1,  cat.default.pos ="outer", cat.pos = c(0,0,-120, 120,0))
+
+
+diff.paths = lapply(1:length(snp.cls.path.num), function(n) setdiff(snp.cls.path.num[[n]], unlist(snp.cls.path.num[-n])))
+
+```
+
+
+#### 2.2.2 Genes
+```{r}
+# read genes (n =2913) of Akkermansia
+midas.gene = read.table(paste("results/WOL_shogun/MIDAS/midas_genes/", organism, "/genes_reads.txt",sep=""),head=T,as.is=T,row.names = 1,check.names = F)
+colnames(midas.gene) = gsub("_midas", "", colnames(midas.gene))
+midas.gene.relab = sweep(midas.gene, 2, colSums(midas.gene), `/`)
+
+midas.gene.relab = midas.gene.relab[,match(midas.snp.meta$iMSMS_ID, colnames(midas.gene.relab))]
+# gene presence/absence
+midas.gene.presabs = read.table(paste( "results/WOL_shogun/MIDAS/midas_genes/", organism, "/genes_presabs.txt",sep=""),head=T,as.is=T,row.names = 1,check.names=F)
+colnames(midas.gene.presabs) = gsub("_midas", "",colnames(midas.gene.presabs))
+
+midas.gene.presabs= midas.gene.presabs[,match(midas.snp.meta$iMSMS_ID, colnames(midas.gene.presabs))] 
+```
+
+##### Gene cluster heatmap
+```{r}
+annotation = data.frame(cluster = factor(midas.snp.meta$cluster), probiotics  = factor(midas.snp.meta$probiotics), allergy = factor(midas.snp.meta$allergies), nsaids =factor(midas.snp.meta$nsaids)  ,treatment = factor(midas.snp.meta$treatment_status), disease = factor(midas.snp.meta$disease_course),sex = factor(midas.snp.meta$sex),site = factor(midas.snp.meta$site))
+
+rownames(annotation) =midas.snp.meta$iMSMS_ID
+
+anno_cols = list(disease = disease_course.cols[c(1,3,2,4)], site = Site.cols, treatment =c("Control" = "white", "Off" = "grey", "Treated" = "black"), sex = sex.cols,  nsaids= c( "0" = "white", "1" = "black"),  allergy =c("0" = "white","1" = "black"),probiotics =c( "0" = "white","1" = "black"), cluster = c("cluster1" ="#fdc086", "cluster2" = "#7fc97f", "cluster3" = "#beaed4"))
+
+my.breaks <- c(seq(0, 1, by=0.01))
+midas.genepreab.hm = pheatmap(t(midas.gene.presabs), annotation_row = annotation, annotation_colors = anno_cols, show_colnames = F,cutree_rows = 4, color =colorRampPalette(brewer.pal(n = 9, name = "YlGnBu"))(length(my.breaks )),breaks = my.breaks)
+dev.copy2pdf(file=paste( "results/WOL_shogun/MIDAS/", organism, "/Akkermansia_MIDAS_gene_heatmap_three_clusters.pdf",sep=""), width =12, height = 8.5, useDingbats =F)
+
+# check the genes expression of Akkermansia (humann2) in Akk clusters
+akk.snp.genes = akk.genes.rel[,match(midas.snp.meta$iMSMS_ID, colnames(akk.genes.rel))]
+
+akk.snp.geneslog = log10(akk.snp.genes + 2.84430e-08)
+my.breaks <- c(seq(-8, 0, by=0.01))
+akksnpgene.hm = pheatmap(t(akk.snp.geneslog), annotation_row = annotation, annotation_colors = anno_cols, show_colnames = F,cutree_rows = 4, color =colorRampPalette(brewer.pal(n = 9, name = "YlGnBu"))(length(my.breaks )),breaks = my.breaks )
+
+
+```
+
+##### Gene cluster function
+```{r}
+# cluster of genes
+gene.cls =  sort(cutree(midas.genepreab.hm$tree_col, k=4))
+gene.cls2 = lapply(c(1:4),function(x) names(gene.cls[gene.cls== x]))
+
+gene.cls.func = lapply(gene.cls2, function(x){
+  func = snp.gene.func[snp.gene.func$gene_id %in% x, ]
+  func = data.frame(table(func[!func$ontology %in% "ec", c("func")]))
+  colnames(func) = c("func", "select")
+  func$selectNum = length(x)
+  func = merge(enrich.kegg,func, by = "func")
+  func$P.value = apply(func[,3:6], 1, function(x)
+      phyper(as.numeric(x[3])-1,as.numeric(x[1]),
+             as.numeric(x[2])-as.numeric(x[1]),as.numeric(x[4]),lower.tail=FALSE)) 
+  func$p.adjust = p.adjust(func$P.value, method = "fdr")
+  func
+})
+gene.cls.funcsign = lapply(gene.cls.func,function(x){
+  x[x$P.value < 0.05, ]
+})
+
+
+for(i in 1:4){
+  data= gene.cls.funcsign[[i]][order(gene.cls.funcsign[[i]][,"P.value"],decreasing = F),]
+  barplot(data[,"P.value"],names = data[,"func"],las =1, horiz=T,width=0.5,space=0.5,
+            col= "#0071bc",axes=T,xlab = "-log(p-value)",
+            cex.axis=1.2)
+ distance = seq(0.5,0.75*nrow(gene.cls.funcsign[[i]]),0.75)
+for(n in 1:nrow(gene.cls.funcsign[[i]])){
+  text(0,distance[n],gene.cls.funcsign[[i]][n,"id"],pos=4,cex=1.3)
+}
+ #dev.copy2pdf(file = paste("results/WOL_shogun/MIDAS/Akkermansia_muciniphila_55290/Gene_presabs_cluster_functional_enrichment_test", i, ".pdf",sep=""))
+ dev.copy2pdf(file = paste("results/WOL_shogun/MIDAS/Akkermansia_muciniphila_55290/SNP_cluster3_gene_presabs_cluster_functional_enrichment_test", i, ".pdf",sep=""))
+}
+
+# heatmap of Akkermansia genes by humann2
+akk.genes.rel
+
+```
+
+
+### 2.2 Compare Akkermansia genes in two clusters
+```{r}
+# compare Akkmermansia SNPs/genes
+# group the samples based on th phylogenetic trees 
+ 
+# differential analysis for gene expression
+require(DESeq2)
+require(phyloseq)
+
+akk.otu = otu_table(akk.midas.gene, taxa_are_rows = TRUE)
+samples= sample_data(akk.meta)
+# Combine everything to make a phyloseq file
+ph_L6 = phyloseq(akk.otu, samples)
+
+des_pair = phyloseq_to_deseq2(ph_L6, ~ group)
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+geoMeans = apply(counts(des_pair), 1, gm_mean)
+des_pair = estimateSizeFactors(des_pair, geoMeans = geoMeans)
+
+des_pair_data = DESeq(des_pair, fitType = "local")
+des_pair_res = data.frame(results(des_pair_data))
+
+des_pair_res = des_pair_res[!is.na(des_pair_res$padj),]
+sign = des_pair_res[des_pair_res$padj < 0.05, ]
+
+# gene functions
+func.files= list.files("../Metagenomics/results/MIDAS/midas_db/ontologies/",full.names = T)
+func = lapply(func.files,function(x){
+  y = read.csv(x, head=F,as.is=T,sep="\t",stringsAsFactors = F,colClasses = c( "character","character"))
+  y
+})
+names(func) =c("ec","figfam","go", "kegg")
+func = lapply(func, function(x){
+  colnames(x)=c("function_id", "Description")
+  x
+})
+# gene id to functions
+gene2func = read.table(gzfile("../Metagenomics/results/MIDAS/midas_db/pan_genome/Akkermansia_muciniphila_55290/centroid_functions.txt.gz"), head=T,as.is=T,sep="\t")
+akk.gene.func = split(gene2func,gene2func$ontology)
+
+akk.gene.func2 = lapply(names(akk.gene.func), function(x){
+  y = merge(akk.gene.func[[x]], func[[x]], by = "function_id")
+  colnames(y) = c(paste(x,"_id",sep=""), "gene_id", "ec", paste(x,"_description",sep=""))
+  y = y[,c(1,2,4)]
+  y
+})
+akk.gene.funcs =Reduce(function(x,y) merge(x,y,by="gene_id",all =T), akk.gene.func2)
+
+sign$gene_id = rownames(sign)
+sign.funcs= merge(sign, akk.gene.funcs,  by = "gene_id")
+sign.funcs.up = sign.funcs[sign.funcs$log2FoldChange > 0, ]
+sign.funcs.down = sign.funcs[sign.funcs$log2FoldChange < 0, ]   
+
+# associate the 10 samples with meta and diet
+akk.meta$iMSMS_ID = sapply(akk.meta$`#SampleID`, function(x){
+  y = unlist(strsplit(x, "_"))[2:3]
+  y= paste(y, collapse ="-")
+  y
+})
+akk.meta = merge(akk.meta, seqmeta,by = "iMSMS_ID")
+
+
+# Akkermansia presence or absence
+akk.gene.presabs = akk.gene.presabs[,match(akk.meta$`#SampleID`, colnames(akk.gene.presabs))]
+cluster2 =  akk.gene.presabs[rowSums(akk.gene.presabs[,1:5]) == 0 & rowSums(akk.gene.presabs[,6:10]) >=3, ]
+cluster1 =  akk.gene.presabs[rowSums(akk.gene.presabs[,6:10]) == 0 & rowSums(akk.gene.presabs[,1:5]) >=3, ]
+
+cluster =rbind(cluster1, cluster2)
+cluster$gene_id = rownames(cluster)
+cluster = merge(cluster, akk.gene.funcs, by = "gene_id")
+colnames(cluster)[2:11] = gsub("_S.*", "",colnames(cluster)[2:11])
+colnames(cluster)[2:11] = gsub("_", ".", colnames(cluster)[2:11])
+
+# GO
+cluster.go = cluster[!is.na(cluster$go_description),]
+cluster.go = unique(cluster.go[,c(1:11, 13,17)])
+rownames(cluster.go) = paste(cluster.go$gene_id, cluster.go$ec_description, cluster.go$go_description, sep ="; ")
+cluster.go = unique(cluster.go)
+g1 = pheatmap(cluster.go[,2:11], border_color = "white" ,cluster_cols = F)
+
+# KEGG
+cluster.kegg = cluster[!is.na(cluster$kegg_description),]
+cluster.kegg = unique(cluster.kegg[,c(1:11, 13, 19)])
+cluster.kegg =unique(cluster.kegg)
+rownames(cluster.kegg) = paste(cluster.kegg$gene_id, cluster.kegg$ec_description, cluster.kegg$kegg_description, sep ="; ")
+g2 = pheatmap(cluster.kegg[,2:11], border_color = "white" ,cluster_cols = F)
+
+
+```
+
+### 2.3 Compare Akkermansia SNPs
+```{r}
+akk.snp = read.table("../Metagenomics/results/MIDAS/midas_merge_snps/Akkermansia_muciniphila_55290/snps_freq.txt",head=T,as.is=T,row.names=1)
+
+snp.info = read.table("../Metagenomics/results/MIDAS/midas_merge_snps/Akkermansia_muciniphila_55290/snps_info.txt",head=T,as.is=T,row.names=1)
+
+akk.snp= akk.snp[,match(akk.meta$`#SampleID`, colnames(akk.snp))]
+akk.snp$gene_id = snp.info[match(rownames(akk.snp), rownames(snp.info)), "gene_id"]
+snp1 = akk.snp[rowSums(akk.snp[,6:10] == 0) ==5 & rowSums(akk.snp[,1:5] != 0) >=4, ]
+snp2 = akk.snp[rowSums(akk.snp[,1:5] == 0) ==5 & rowSums(akk.snp[,6:10] != 0) >=4, ]
+
+snp = rbind(snp1, snp2)
+snp = merge(snp, akk.gene.funcs, by = "gene_id")
+colnames(snp)[2:11] = gsub("_S.*", "",colnames(snp)[2:11])
+colnames(snp)[2:11] = gsub("_", ".", colnames(snp)[2:11])
+
+
+# GO
+snp.go =snp[!is.na(snp$go_description), ]
+snp.go = unique(snp.go[,c(1:11, 13,17)])
+snp.go = unique(snp.go)
+rownames(snp.go) = paste(paste(snp.go$gene_id, "Pos",rownames(snp.go),sep=""), snp.go$ec_description, snp.go$go_description, sep ="; ")
+
+g1 = pheatmap(snp.go[,2:11], border_color = "white",cluster_cols = F )
+
+# KEGG
+snp.kegg = snp[!is.na(snp$kegg_description),]
+snp.kegg = unique(snp.kegg[,c(1:11, 13, 19)])
+snp.kegg =unique(snp.kegg)
+rownames(snp.kegg) = paste(paste(snp.kegg$gene_id, "Pos",rownames(snp.kegg),sep=""), snp.kegg$ec_description, snp.kegg$kegg_description, sep ="; ")
+g2 = pheatmap(snp.kegg[,2:11], border_color = "white" ,cluster_cols = F)
+
+```
+
+
+#### Akkermansia SNPs / genes
+```{r}
+ 
+# SNP 1294~4830 grouped together
+akk.cls = list(snp1 = names(cls[cls==4]), snp2 =names(cls[cls==1]),snp3 = names(cls[cls==5]),snp4 = names(cls[cls==3]),  snp5 = names(cls[cls==2]))
+
+
+
+
+
+```
+
+## Search NCBI genomes 
+```{r}
+refseqs = list.files(path = "results/WOL_shogun/Refseq", pattern = "feature_table", recursive = T,full.names = T)
+
+assemble = read.csv("results/WOL_shogun/Refseq/assembly_summary.txt",head=T,as.is=T,comment.char = "!",sep="\t",skip=1)
+# get the human Akkermansia strains from PATRIC
+patric = read.csv("results/WOL_shogun/Refseq/PATRIC_genome_human_only.csv",head=T,as.is=T)
+
+ncbi.gene =lapply(refseqs, function(x){
+      fn = unlist(strsplit(x, "/"))[4]
+  if(grepl("gz", x)){
+    y = read.csv(gzfile(x), head=T,as.is=T,sep="\t",comment.char = "!")
+  }else{
+    y = read.csv(x, head=T,as.is=T,sep="\t",comment.char = "!")
+  }
+    y = unique(y$name)
+    y = y[y!=""]
+    y= data.frame(gene = y, strain = 1,stringsAsFactors = F)
+    colnames(y)[2] = fn
+    y
+})
+
+genetable =Reduce(function(x,y) merge(x,y, by = "gene",all=T), ncbi.gene)
+genetable[is.na(genetable)] = 0
+rownames(genetable) = genetable$gene
+genetable = genetable[,-1]
+#genetable2= genetable
+
+colnames(genetable) = gsub("[.]1.*", ".1", colnames(genetable))
+colnames(genetable) = gsub("[.]2.*", ".2", colnames(genetable))
+genetable = genetable[,-2]
+assemble = assemble[match(colnames(genetable), assemble$X..assembly_accession), ]
+
+colnames(genetable) = paste("Akkermansia muciniphila", assemble$infraspecific_name,sep= " ")
+
+assemble.hm = pheatmap(t(genetable),show_colnames = F,fontsize =  4)
+assemble.cls =  sort(cutree(assemble.hm$tree_col, k=5))
+assemble.cls2 = lapply(c(1:5),function(x) names(assemble.cls[assemble.cls== x]))
+
+assemble.cls.func = lapply(assemble.cls2, function(x){
+  snp.gene.func2 = snp.gene.func
+  snp.gene.func2$func = gsub(" [(]EC.*", "", snp.gene.func2$func)
+  func = snp.gene.func2[snp.gene.func2$func %in% x, ]
+  func = data.frame(table(func[!func$ontology %in% "ec", c("func")]))
+  colnames(func) = c("func", "select")
+  func$selectNum = length(x)
+  func = merge(enrich.kegg,func, by = "func")
+  func$P.value = apply(func[,3:6], 1, function(x)
+      phyper(as.numeric(x[3])-1,as.numeric(x[1]),
+             as.numeric(x[2])-as.numeric(x[1]),as.numeric(x[4]),lower.tail=FALSE)) 
+  func$p.adjust = p.adjust(func$P.value, method = "fdr")
+  func
+})
+gene.cls.funcsign = lapply(gene.cls.func,function(x){
+  x[x$P.value < 0.05, ]
+})
+
+
+```
+

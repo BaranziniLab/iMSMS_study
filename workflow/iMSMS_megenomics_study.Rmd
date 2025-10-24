@@ -1,0 +1,1874 @@
+---
+title: "iMSMS shotgun metagenomics study"
+author: "Xiaoyuan Zhou"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Introduction
+```{r}
+require("gdata")
+require("ggplot2")
+theme_set(theme_bw() +
+            #eliminates background, gridlines, and chart border
+            theme(text = element_text(size=15),
+                  plot.title = element_text(size = 12, face = "bold",hjust = 0.5),
+                  axis.line = element_line(colour = "black",size =0.5),
+                  plot.background = element_blank()
+                  ,panel.grid.major = element_blank()
+                  ,panel.grid.minor = element_blank(),
+                  axis.text.x = element_text(colour = "black"),
+                  axis.text.y = element_text(colour = "black"),
+                  panel.border =  element_blank()))
+
+#                  panel.border = element_rect(size =0)))
+require("readxl")
+```
+
+# Settings
+```{r message=FALSE}
+# load required R packages 
+require("gdata")
+require("readxl")
+require("vegan")
+require("ggplot2")
+require("ape")
+require("phyloseq")
+require("car")
+require("rgl")
+require("tidyr")
+require("RColorBrewer")
+require("WriteXLS")
+require("pheatmap")
+require("reshape")
+require("gridExtra")
+require("ppcor")
+
+## Set colors for group
+disease_course.cols = c(Control = "#74add1",
+                        SPMS = "#a50026" , 
+                        RRMS = "#f6b56e",
+                        PPMS = "#5b0a0a")
+disease_course_control.cols=  c(Control_RRMS = "#74add1",
+                                Control_PMS = "#74add1",
+                                PMS = "#a50026" , 
+                                RRMS = "#f6b56e")
+disease.cols = c(Control = "#74add1",MS= "#a50026")
+disease_treatment.cols = c(Control = "#74add1",RRMS_Treated = "#a50026" ,RRMS_Off = "#a50026" , PPMS_Treated = "#f6b56e",PPMS_Off = "#f6b56e",SPMS_Treated = "#f2e8ad", SPMS_Off = "#f2e8ad", PMS = "#FFBF74",MS ="#a50026" )
+Site.cols = c("San Francisco" = "#8c510a", 
+              "Boston" = "#bf812d", 
+              "New York" = "#dfc27d", 
+              "Pittsburgh" = "#c7eae5", 
+              "Buenos Aires" = "#80cdc1", 
+              "Edinburgh" = "#35978f", 
+              "San Sebastian" = "#01665e")
+sex.cols = c("F" ="#df88d9", "M" =  "#20c7e1")
+treatment.cols = c(Treated_HHC = "#74add1", 
+                   Untreated_HHC = "#74add1",
+                   Untreated = "#de77ae", 
+                   Treated = "#7fbc41" )
+
+treatments.cols =c(Control ="#74add1", 
+                   "Control_Untreated" = "#74add1", 
+                   "Untreated" ="#de77ae", 
+                   "Control_Glatiramer acetate" = "#74add1",
+                   "Control_Fingolimod" ="#74add1",
+                   "Control_Interferon" = "#74add1",
+                   "Control_ocrevus(rituxan)" ="#74add1", 
+                   "Control_Dimethyl fumarate" = "#74add1",
+                   "Control_Natalizumab" = "#74add1", 
+                   "Glatiramer acetate" = "#762a83","Fingolimod" ="#af8dc3",
+                   "Interferon"="#e7d4e8" ,
+                   "ocrevus(rituxan)" ="#d9f0d3",
+                   "Dimethyl fumarate" ="#7fbf7b", 
+                   "Natalizumab"="#1b7837")
+
+color.list = list(disease_course = disease_course.cols,
+                  disease_course_control = disease_course_control.cols,
+                  disease = disease.cols,
+                  site = Site.cols,
+                  sex = sex.cols,
+                  treatment_status = treatment.cols,
+                  treatmetns = treatments.cols)
+
+##Set levels for group
+group.levels = list(disease_course_control =c("Control_RRMS", "RRMS","Control_SPMS", "SPMS", "Control_PPMS", "PPMS"), 
+                    site =c("San Francisco","Boston","Mount Sinai","Pittsburgh", "Buenos Aires", "Edinburgh","San Sebastian"),
+                    treatment_control = c("Treated_HHC", "Treated", "Untreated_HHC","Untreated"), 
+                    disease = c("Control", "MS"), 
+                    treatments_control = c("Control_Untreated","Untreated", "Control_Dimethyl fumarate" ,"Dimethyl fumarate","Control_Fingolimod","Fingolimod", 
+                                           "Control_Glatiramer acetate","Glatiramer acetate",  "Control_Interferon","Interferon",   "Control_Natalizumab", "Natalizumab","Control_ocrevus(rituxan)","ocrevus(rituxan)"))
+
+
+### Check variable size in the workspace
+sizes <- sapply(ls(), function(n) object.size(get(n)), simplify = FALSE); print(sapply(sizes[order(as.integer(sizes))], function(s) format(s, unit = 'auto')))
+```
+
+
+#1. Load data and processing
+```{r}
+# load data for shotgun metagenomics analysis
+load("rdata/seqmeta.rda") #meta data for 1152 samples
+load("rdata/taxa.list.rda") # Raw abundance of metagenomics taxa, e.g. phylum, order, species
+load("rdata/high.path.rda") # Relative abundacne of metagenomics pathways in different hierarchy (MetaCyc)
+
+# data filtering and normalization
+source("scripts/normalizeFunc.R")
+# filter the microbes (low abundance and prevalance)
+taxa.list.filter = lapply(taxa.list,function(x){
+  x = x[rowSums(x > 0) >= 0.05 * ncol(x), ]
+  x = x[rowSums(x) > 10, ]
+  x
+})
+
+# relative abundance
+taxa.list.rel = lapply(taxa.list.filter, function(x){
+  normalizeFunc(x, method = "relative")
+})
+
+# Arcsine square-root transformation
+taxa.list.ast = lapply(taxa.list.filter, function(x){
+  normalizeFunc(x, method = "AST")
+})
+```
+
+
+#2. Microbial beta-diversity
+##2.1 PCA plot of diversity
+```{r}
+require(vegan)
+bray.list = lapply(taxa.list.filter, function(x){
+  y = vegdist(t(x), upper = T, diag = T, method = "bray")
+  y = as.matrix(y)
+  colnames(y) = rownames(y) = gsub("[.]", "-", colnames(y))
+  y
+})
+names(bray.list) =names(taxa.list.filter)
+
+# PCA 
+source("../iMSMS_Human_16S/scripts/unifracPCA.R")
+res= unifracPCA(file=bray.list[[4]], condition = seqmeta, group = "disease_course", color.list=color.list, adonis =TRUE,strataID = "household",levels = c("Control","RRMS","SPMS", "PPMS"), method =c("PCoA"),shapes =c(Control=16,RRMS =16,PPMS= 16, SPMS=16), width =5.5, height=4)
+
+res= unifracPCA(file=bray.list[[4]], condition = seqmeta, group = "disease", color.list=color.list, adonis =TRUE,strataID = "household",levels = c("Control","MS"), method =c("PCoA"),shapes =c(Control=16,MS= 16), width =5, height=4)
+
+res= unifracPCA(file=bray.list[[4]], condition =  seqmeta, group = "site", color.list=color.list, adonis =TRUE,strataID = "household",levels =group.levels[["site"]] , method =c("PCoA"),shapes =rep(16, length(group.levels[["site"]])), width =6, height=4)
+
+# plot only healthy individuals
+res= unifracPCA(file=bray.list[[4]], condition =  seqmeta[seqmeta$disease == "Control",], group = "site", color.list=color.list, adonis =TRUE,strataID = "household",levels =group.levels[["site"]] , method =c("PCoA"),shapes =rep(16, length(group.levels[["site"]])), width =6, height=4)
+
+res= unifracPCA(file= y[rownames(y) %in% ms.seqmeta$UntreadMS_HHC$iMSMS_ID, colnames(y) %in% ms.seqmeta$UntreadMS_HHC$iMSMS_ID], condition = ms.seqmeta$UntreadMS_HHC, group = "disease", color.list=color.list, adonis =TRUE,strataID = "household",levels = c("Control","MS"), method =c("PCoA"),shapes =c(Control=16,MS=16), width =5.5, height=4)
+
+```
+
+#2.2. PERMANOVA test on the effect of confounders on microbial composition
+```{r}
+# read the confounding factors and description
+termgroup = read.xls("Supplementary_datasets/Confounding_factors_termgroup.xlsx",sheet =1, as.is=T, head=T)
+confounder.anova= seqmeta[,c("iMSMS_ID", termgroup$Term) ]
+confounder.anova$age = as.numeric(confounder.anova$age)
+confounder.anova$bmi = as.numeric(confounder.anova$bmi)
+source("scripts/permanovaPlot.R")
+
+permanovaPlot(bray.list[[1]], confounder.anova = confounder.anova, distance =TRUE, termgroup=termgroup, category = "kegg")
+```
+
+#3.Microbial differential analysis by mixed linear regression model
+### 3.1 Set group comparisons
+```{r}
+source("scripts/linear_regression.R")
+source("scripts/linear_regression_plot.R")
+
+# MS group (3 comparisons)
+ms.seqmeta = list(UntreadMS_HHC = seqmeta[seqmeta$household %in% seqmeta[seqmeta$disease=="MS" & seqmeta$treatment_status == "Untreated", "household"],], TreadMS_HHC = seqmeta[seqmeta$household %in% seqmeta[seqmeta$disease=="MS" & seqmeta$treatment_status == "Treated", "household"],], TreatedMS_untreatedMS = seqmeta[ seqmeta$treatment_status != "Control", ])
+
+# disease course group (8 comparisons)
+disease_pro.seqmeta =  list(
+  UntreatedRRMS_HHC = seqmeta[seqmeta$household %in% seqmeta[seqmeta$disease_course=="RRMS" & seqmeta$treatment_status == "Untreated", "household"],], 
+  UntreatedPMS_HHC = seqmeta[seqmeta$household %in% seqmeta[seqmeta$pms =="PMS" & seqmeta$treatment_status == "Untreated", "household"],],
+  UntreatedRRMS_untreatedPMS =seqmeta[seqmeta$pms %in% c("RRMS", "PMS") & seqmeta$treatment_status == "Untreated",], 
+  TreatedRRMS_HHC = seqmeta[seqmeta$household %in% seqmeta[seqmeta$disease_course=="RRMS" & seqmeta$treatment_status == "Treated", "household"],], 
+  TreatedPMS_HHC = seqmeta[seqmeta$household %in% seqmeta[seqmeta$pms =="PMS" & seqmeta$treatment_status == "Treated", "household"],],
+  TreatedRRMS_TreatedPMS =seqmeta[seqmeta$pms %in% c("RRMS", "PMS") & seqmeta$treatment_status == "Treated",],
+  TreatedRRMS_untreatedRRMS = seqmeta[seqmeta$pms %in% c("RRMS"),],
+  TreatedPMS_untreatedPMS = seqmeta[seqmeta$pms %in% c("PMS"),])
+
+# treatments
+######## use all MS samples
+# treatment - HHC
+treatments = unique(seqmeta$treatments)
+treatments = treatments[!treatments %in% c("Control","Untreated")]
+treatmenthhc.seqmeta = lapply(treatments,function(x){
+  y = seqmeta[seqmeta$household %in% seqmeta[seqmeta$treatments %in% x, "household"], ]
+  y
+})
+names(treatmenthhc.seqmeta) = paste(treatments, "HHC",sep = "_")
+
+# treatment - untreated
+untreated = seqmeta[seqmeta$treatment_status == "Untreated",]
+treatstatus.seqmeta = lapply(treatmenthhc.seqmeta, function(x){
+  y = x[x$disease != "Control", ]
+  y = rbind(y, untreated)
+  y
+})
+names(treatstatus.seqmeta ) = paste(treatments, "untreated", sep = "_")
+
+# treatment - treatment 
+trs = combn(treatments,2)
+treatcomp.seqmeta = list()
+for(i in 1:ncol(trs)){
+  treatcomp.seqmeta[[i]] = seqmeta[seqmeta$treatments %in% trs[,i],]
+  levels = trs[,i]
+  levels = levels[order(levels)]
+  treatcomp.seqmeta[[i]]$treatments = factor( treatcomp.seqmeta[[i]]$treatments, levels =levels )
+  names( treatcomp.seqmeta)[i] = paste(rev(levels),collapse= "_")
+}
+
+######### use RRMS samples only
+# treatment - HHC
+rrms.seqmeta =seqmeta[seqmeta$pms %in% c("Control_RRMS", "RRMS"),]
+treatments = unique(rrms.seqmeta$treatments)
+treatments = treatments[!treatments %in% c("Control","Untreated")]
+
+treatmenthhc.rrms.seqmeta = lapply(treatments,function(x){
+  y = rrms.seqmeta[rrms.seqmeta$household %in% rrms.seqmeta[rrms.seqmeta$treatments %in% x, "household"], ]
+  y
+})
+names(treatmenthhc.rrms.seqmeta) = paste(treatments, "RRMS_HHC",sep = "_")
+
+# treatment - untreated
+untreated = rrms.seqmeta[rrms.seqmeta$treatment_status == "Untreated",]
+treatstatus.rrms.seqmeta = lapply(treatmenthhc.rrms.seqmeta, function(x){
+  y = x[x$disease != "Control", ]
+  y = rbind(y, untreated)
+  y
+})
+names(treatstatus.rrms.seqmeta ) = paste(treatments, "RRMS_untreated", sep = "_")
+
+# treatment - treatment 
+trs = combn(treatments,2)
+treatcomp.rrms.seqmeta = list()
+for(i in 1:ncol(trs)){
+  treatcomp.rrms.seqmeta[[i]] = rrms.seqmeta[rrms.seqmeta$treatments %in% trs[,i],]
+  levels = trs[,i]
+  levels = levels[order(levels)]
+  treatcomp.rrms.seqmeta[[i]]$treatments = factor( treatcomp.rrms.seqmeta[[i]]$treatments, levels =levels )
+  names( treatcomp.rrms.seqmeta)[i] = paste(paste(rev(levels),collapse= "_"),"RRMS",sep="_")
+}
+
+######### use PMS samples only
+# treatment - HHC
+pms.seqmeta =seqmeta[seqmeta$disease_course_control %in% c("Control_PMS", "PMS"),]
+treatments = unique(pms.seqmeta$treatments)
+treatments = treatments[!treatments %in% c("Control","Untreated")]
+
+treatmenthhc.pms.seqmeta = lapply(treatments,function(x){
+  y = pms.seqmeta[pms.seqmeta$household %in% pms.seqmeta[pms.seqmeta$treatments %in% x, "household"], ]
+  y
+})
+names(treatmenthhc.pms.seqmeta) = paste(treatments, "PMS_HHC",sep = "_")
+
+# treatment - untreated
+untreated =pms.seqmeta[pms.seqmeta$treatment_status == "Untreated",]
+treatstatus.pms.seqmeta = lapply(treatmenthhc.pms.seqmeta, function(x){
+  y = x[x$disease != "Control", ]
+  y = rbind(y, untreated)
+  y
+})
+names(treatstatus.pms.seqmeta ) = paste(treatments, "PMS_untreated", sep = "_")
+
+# treatment - treatment 
+trs = combn(treatments,2)
+treatcomp.pms.seqmeta = list()
+for(i in 1:ncol(trs)){
+  treatcomp.pms.seqmeta[[i]] = pms.seqmeta[pms.seqmeta$treatments %in% trs[,i],]
+  levels = trs[,i]
+  levels = levels[order(levels)]
+  treatcomp.pms.seqmeta[[i]]$treatments = factor( treatcomp.pms.seqmeta[[i]]$treatments, levels =levels )
+  names( treatcomp.pms.seqmeta)[i] = paste(paste(rev(levels),collapse= "_"),"PMS",sep="_")
+}
+
+### Administration in all samples
+seqmeta$administration = seqmeta$treatments
+seqmeta$administration = mygsub(c("Fingolimod","Dimethyl fumarate", "Glatiramer acetate", "Interferon", "Natalizumab", "ocrevus[(]rituxan[)]"),c("Oral","Oral","Subcutaneous","Subcutaneous", "Infused", "Infused"), seqmeta$administration)
+adm.seqmeta= split(seqmeta, seqmeta$administration)
+adm.seqmeta = adm.seqmeta[c(2:4)]
+
+adm.seqmeta.control = lapply(adm.seqmeta,function(x){
+  y = seqmeta[seqmeta$household %in% x$household, ]
+  y
+})
+names(adm.seqmeta.control) = paste(names(adm.seqmeta),"HHC",sep="_")
+
+adm.seqmeta.untreated = lapply(adm.seqmeta, function(x){
+  y = seqmeta[seqmeta$iMSMS_ID %in% x$iMSMS_ID | seqmeta$treatment_status == "Untreated", ]
+  y
+}) 
+names(adm.seqmeta.untreated)= paste(names(adm.seqmeta),"untreated",sep="_")
+
+
+adms = c("Oral","Infused", "Subcutaneous")
+adms.comb = combn(adms, 2)
+adm.seqmeta.between= list()
+for(i in 1:3){
+  adm.seqmeta.between[[i]] = seqmeta[seqmeta$administration %in% adms.comb[,i],]
+  levels = adms.comb[,i]
+  levels = levels[order(levels)]
+  adm.seqmeta.between[[i]]$administration = factor( adm.seqmeta.between[[i]]$administration, levels = levels)
+  names(adm.seqmeta.between)[i] = paste(rev(levels),collapse = "_")
+}
+
+##### administration in RRMS only
+adm.rrms.seqmeta= split(rrms.seqmeta, rrms.seqmeta$administration)
+adm.rrms.seqmeta = adm.rrms.seqmeta[c(2:4)]
+
+adm.rrms.seqmeta.control = lapply(adm.rrms.seqmeta,function(x){
+  y = rrms.seqmeta[rrms.seqmeta$household %in% x$household, ]
+  y
+})
+names(adm.rrms.seqmeta.control) = paste(names(adm.seqmeta),"RRMS_HHC",sep="_")
+
+adm.rrms.seqmeta.untreated = lapply(adm.rrms.seqmeta, function(x){
+  y = rrms.seqmeta[rrms.seqmeta$iMSMS_ID %in% x$iMSMS_ID | rrms.seqmeta$treatment_status == "Untreated", ]
+  y
+})
+names(adm.rrms.seqmeta.untreated) = paste(names(adm.seqmeta),"RRMS_untreated",sep="_")
+
+adms = c("Oral","Infused", "Subcutaneous")
+adms.comb = combn(adms, 2)
+adm.rrms.seqmeta.between= list()
+for(i in 1:3){
+  adm.rrms.seqmeta.between[[i]] = rrms.seqmeta[rrms.seqmeta$administration %in% adms.comb[,i],]
+  levels = adms.comb[,i]
+  levels = levels[order(levels)]
+  adm.rrms.seqmeta.between[[i]]$administration = factor( adm.rrms.seqmeta.between[[i]]$administration, levels = levels)
+  names( adm.rrms.seqmeta.between)[i] = paste(paste(rev(levels),collapse = "_"),"RRMS", sep="_")
+}
+
+```
+
+### 3.2 Feature ~ disease status
+```{r}
+data.list = c(taxa.list.rel, high.path)
+
+seqmeta.comp = c(ms.seqmeta, disease_pro.seqmeta, treatmenthhc.seqmeta,treatstatus.seqmeta,treatcomp.seqmeta, adm.seqmeta.control,adm.seqmeta.untreated, adm.seqmeta.between, treatmenthhc.rrms.seqmeta, treatstatus.rrms.seqmeta, treatcomp.rrms.seqmeta, adm.rrms.seqmeta.control,adm.rrms.seqmeta.untreated,adm.rrms.seqmeta.between,treatmenthhc.pms.seqmeta, treatstatus.pms.seqmeta, treatcomp.pms.seqmeta)
+
+# group comparisons
+group1= names(ms.seqmeta)
+group2= names(disease_pro.seqmeta)
+group3 = names(c(treatmenthhc.seqmeta,treatstatus.seqmeta,treatcomp.seqmeta))
+group4= names(c(adm.seqmeta.control,adm.seqmeta.untreated, adm.seqmeta.between))
+group5= names(c(treatmenthhc.rrms.seqmeta, treatstatus.rrms.seqmeta, treatcomp.rrms.seqmeta))
+group6 = names(c(adm.rrms.seqmeta.control,adm.rrms.seqmeta.untreated,adm.rrms.seqmeta.between))
+group7= names(c(treatmenthhc.pms.seqmeta, treatstatus.pms.seqmeta, treatcomp.pms.seqmeta))
+
+#require(reshape)
+#require(ggplot2)
+
+for(name in names(seqmeta.comp)){
+  for(feature in names(data.list)){
+    if(name %in% group1){
+      dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/MS"
+      if(grepl("HHC", name)){
+        fixed.var1 = "disease"
+        levels = c("Control", "MS")
+        house.adjust  =T
+      }else{
+        fixed.var1 = "treatment_status"
+        levels = c("Untreated", "Treated")
+        house.adjust  =F
+      }
+    }else if (name %in% group2){
+      dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course"
+      if(grepl("HHC", name)){
+        fixed.var1 = "disease"
+        levels =c("Control","MS")
+        house.adjust =T
+      }else if(grepl("RRMS",name) & grepl("PMS",name)){
+        fixed.var1 = "pms"
+        levels =c("RRMS","PMS")
+        house.adjust =F
+      }else{
+        fixed.var1 = "treatment_status"
+        levels =c("Untreated","Treated")
+        house.adjust =F
+      }
+    }else if (name %in% c(group3,group5,group7)){
+      if(name %in% group3){
+        dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/treatment_allsamples"
+      }else if(name %in% group5){
+        dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/treatment_RRMSonly"
+      }else{
+        dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/treatment_PMSonly"
+      }
+      if(grepl("HHC",name)){
+        fixed.var1 = "treatments"
+        levels = c("Control", unlist(strsplit(name, "_"))[1])
+        house.adjust =T
+      }else{
+        fixed.var1 = "treatments"
+        levels = unlist(strsplit(name, "_"))
+        levels = levels[!levels %in% c("RRMS", "PMS")]
+        levels= rev(levels)
+        if("untreated" %in% levels){
+          levels = gsub("untreated", "Untreated", levels)
+        }
+        house.adjust =F
+      }
+    }else if(name %in% c(group4, group6)){
+      if(name %in% group4){
+        dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/administration_allsamples"
+      }else{
+        dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/administration_RRMSonly"
+      }
+      fixed.var1 = "administration"
+      if(grepl("HHC", name)){
+        levels = c("Control",unlist(strsplit(name, "_"))[1]) 
+        house.adjust =T
+      }else {
+        levels = unlist(strsplit(name, "_"))
+        levels = levels[levels!="RRMS"]
+        levels= rev(levels)
+        if("untreated" %in% levels){
+          levels = gsub("untreated", "Untreated", levels)
+        }
+        house.adjust =F
+      }
+    }
+    
+    metares = linear_regression(rel.data = data.list[[feature]],arcsin.transform =T, filter =T, fixed.var = c(fixed.var1,"sex", "age", "bmi"),levels =levels,house.adjust =house.adjust, site =T, condition =seqmeta.comp[[name]], taxa =feature, out.file = paste(paste(dir.out, "/Linear_coefficient_metagenomics", sep=""), feature, name, "_sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+    strs = unlist(strsplit(colnames(metares)[1], "_"))
+    if(length(strs) ==2){
+      index = strs[2]
+    }else{
+      index = paste(strs[2:length(strs)], collapse ="_")
+    }
+    
+    colnames(metares) = gsub(index, "diseaseMS",colnames(metares) )
+    
+    sign1 = metares[metares$fdr_diseaseMS <= 0.05, ]
+    padjust1 =TRUE
+    prefix1 = "fdr"
+    if(nrow(sign1) <= 5){
+      height1 = (nrow(sign1) +1)*0.6
+      width1 =10
+    }else if(nrow(sign1) <=15) {
+      height1 = nrow(sign1)*0.4
+      width1 = 11
+    }else{
+      height1 = nrow(sign1)*0.2
+      width1= 11
+    }
+    
+    sign2 = metares[metares$Pr_diseaseMS <= 0.05, ]
+    sign2 = sign2[sign2[,1] <= quantile(metares[,1],seq(0,1,0.05))["5%"] | sign2[,1] >= quantile(metares[,1],seq(0,1,0.05))["95%"], ]
+    padjust2 =FALSE
+    prefix2 = "P0.05_coef_quantile5"
+    if(nrow(sign2) <= 5){
+      height2 = (nrow(sign2) +1)*0.6
+      width2 =10
+    }else if(nrow(sign2) <=15) {
+      height2 = nrow(sign2)*0.4
+      width2 = 11
+    }else{
+      height2 = nrow(sign2)*0.2
+      width2= 11
+    }
+    if(nrow(sign1) >0){
+      linear_regression_plot(metares, taxa =feature, disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file =paste(paste(dir.out, "/Linear_coefficient_metagenomics",sep=""), feature,name,prefix1, "_random_effect.pdf",sep="_"),width =width1,height =height1,taxaname = F, padjust = padjust1)
+    }
+    
+    if(nrow(sign2) >0){
+      linear_regression_plot(sign2, taxa =feature, disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file =paste(paste(dir.out, "/Linear_coefficient_metagenomics",sep=""), feature,name,prefix2, "_random_effect_nofilter.pdf",sep="_"),width =width2,height =height2,taxaname = F, padjust = padjust2)
+    }
+  }
+}
+```
+
+
+#### 3.2.1 Heatmap and barplot of MS-HC differential species
+```{r}
+# species difference
+meta.species = taxa.list.ast[[6]]
+species.difference = matrix(NA, nrow = nrow(meta.species), ncol= ncol(meta.species)/2)
+houses = unique(seqmeta[rownames(seqmeta) %in% colnames(meta.species),"household"])
+
+for(i in 1:ncol(species.difference )){
+  msname = seqmeta[seqmeta$household == houses[i] & seqmeta$disease == "MS", 1]
+  hcname = seqmeta[seqmeta$household == houses[i] & seqmeta$disease == "Control",1 ]
+  species.difference [,i] = meta.species[,colnames(meta.species) %in% msname]-meta.species[,colnames(meta.species) %in% hcname] 
+}
+
+rownames(species.difference ) =  rownames(meta.species)
+colnames(species.difference ) = houses
+
+
+# heatmap and barplot of the difference
+treatmeta = map[map$treatment_status != "Control", ]
+treatmeta = treatmeta[order(treatmeta$treatment_status), ]
+
+# significant differential species 
+#signFile= c("results/WOL_shogun/Linear_regression/disease/all/Linear_coefficient_metagenomics_species_treated_all_sex_age_bmi_fixed_house_site_random.xlsx","results/WOL_shogun/Linear_regression/disease/all/Linear_coefficient_metagenomics_species_untreated_all_sex_age_bmi_fixed_house_site_random.xlsx" )
+signFile = list.files(pattern = "species.*.xlsx",path = "results/WOL_shogun/Linear_regression/disease_course/untreated_comparison/", full.names = T)
+
+signFile = list.files(pattern = "Off.*.xlsx",path = "results/WOL_shogun/Linear_regression/treatments/between/", full.names = T)
+
+
+sign = lapply(signFile, function(x) read.xls(x, head=T,as.is=T,sheet =1))
+signspecies = lapply(sign, function(x){
+  #x[x$fdr_diseaseMS <= 0.05 & abs(x$Coef_diseaseMS) >= 0.005, "taxonomy"]
+  #x[x$fdr_diseaseMS <= 0.05, "taxonomy"]
+  # pvalue and coefficient
+  quantiles = quantile(x[,1],seq(0,1, 0.05))
+  min= quantiles["5%"]
+  max = quantiles["95%"]
+  y = x[x[,1] <= min | x[,1] >= max,]
+  y = y[y[,5] < 0.05,]
+  y$taxonomy
+})
+
+names(signspecies) = c("Treated","Untreated") 
+#treatments
+names(signspecies) = treatments
+signspecies = signspecies[-5]
+# disease course
+names(signspecies) = c("PPMS","RRMS","SPMS")
+
+# function to plot differential species
+diffPlot(species.diff= species.difference, meta =seqmeta[seqmeta$treatment_status =="Treated", ], group = "treatment_status",signspecies =signspecies, plot.type =  "barplot", color = treatment.cols[4:5])
+
+diffPlot = function(species.diff= species.difference, meta =seqmeta[seqmeta$disease !="Control", ], group = "disease",signspecies =signspecies, plot.type = c("heatmap", "barplot"), color = disease.cols){
+  
+  signs= unique(unlist(signspecies))
+  meta[,group] = as.character(meta[,group])
+  diff = species.diff[rownames(species.diff) %in% signs, match(meta$household, colnames(species.diff))]
+  
+  rownames(diff) = gsub("*.*s__", "", rownames(diff))
+  
+  if(plot.type =="heatmap"){
+    annotation = data.frame(site = factor(meta$site))
+    rownames(annotation) = meta$household
+    anno_cols = list(site = Site.cols)
+    if(!is.null(group)){
+      annotation[,group] = factor(meta[,group])
+      anno_cols[[group]] = color
+      meta = meta[order(meta[,group]),]
+    }
+    
+    my.breaks <- c(seq(min(species.diff), max(species.diff), by=0.01))
+    
+    hm = pheatmap(diff, annotation_col = annotation, annotation_colors = anno_cols, cluster_cols = F, show_colnames = F, color =colorRampPalette(brewer.pal(n = 9, name = "YlGnBu"))(length(my.breaks )),breaks = my.breaks)
+  }else if (plot.type == "barplot"){
+    meta2 = split(meta, meta[,group])
+    average.diff = lapply(meta2, function(x){
+      data = diff[,colnames(diff) %in% x$household]
+      avg = apply(data, 1, mean)
+      sem = apply(data, 1, function(x) {sd(x)/sqrt(length(x))})
+      smr = data.frame(mean = avg, sem =sem, group = unique(x[,group]),stringsAsFactors = F)
+      rownames(smr) = rownames(data)
+      smr = smr[rownames(smr) %in% signspecies[[unique(x[,group])]], ]
+      smr$species = rownames(smr)
+      smr
+    })
+    average.diffs=do.call("rbind", average.diff)
+    average.diffs = average.diffs[order(average.diffs$mean), ]
+    
+    average.diffs$species = gsub("*.*s__", "", average.diffs$species)
+    average.diffs$species = factor(average.diffs$species, level =unique(average.diffs$species))
+    
+    ggplot(average.diffs, aes(x=species, y= mean, fill = group )) +
+      geom_bar(stat='identity',position="dodge") +
+      geom_errorbar(aes(ymin=mean-sem, ymax=mean+sem), width=.2,
+                    position=position_dodge(.9))+
+      coord_flip() + ylab("Difference of arcsin(relative abundance)") + xlab("")+
+      scale_fill_manual(name =NULL, values = color)
+    
+  }
+}
+
+dev.copy2pdf(file =paste(dir.out, out.file, sep="") , width =12, height = 8.5, useDingbats =F)
+
+# boxplot 
+g = lapply(sign$taxonomy[c(3,2,4,1,5,16)], function(x) {y = abundancePlot(abundance = taxa.list.rel[[6]], meta = seqmeta, group1 = "disease", group2 = NULL, feature.plot = mygsub(c(" ", "[[]|[]]|[:]"), c(".",""), x), arcsin =T,color = disease.cols, ylab = x); y})
+
+g = lapply(sign$taxonomy[c(3,2,4,1,5,16)], function(x) {y = abundancePlot(abundance =hla.species, meta = hlaseqmeta, group1 = "disease", group2 = "HLA", feature.plot = mygsub(c(" ", "[[]|[]]|[:]"), c(".",""), x), arcsin =T, ylab = x); y})
+
+```
+
+
+#### 3.2.2 Scatterplot of species
+```{r}
+rel.list = c(taxa.list.ast, high.path)
+
+rel.list.meta = lapply(rel.list, function(x){
+  y = t(x)
+  y = merge(y, map, by ="row.names")
+  y
+})
+data = rel.list.meta[["species"]] 
+#data[,2:1678] = log10(data[,2:1678])
+
+colnames(data) = gsub("Ruminococcus sp. CAG:177", "Ruminococcus_sp_CAG177", colnames(data))
+data2 = data[data$iMSMS_ID %in% treatmenthhc.rrms.seqmeta$Interferon_RRMS_HHC$iMSMS_ID,]
+ggplot(data2, aes_string(x = "disease", y =  "Ruminococcus_sp_CAG177"))+
+  geom_boxplot(aes(colour = disease), outlier.size = NA,outlier.shape = NA,fill =NA) +geom_jitter(shape=16, position=position_jitter(0.2),aes(colour = disease)) + scale_color_manual(values = color.list[["disease"]]) + 
+  ylab("Asin(sqrt(rel. abundance))") +ggtitle("Ruminococcus sp. CAG:177")+
+  xlab("") + theme(legend.position = "none") 
+
+```
+
+
+#### 3.2.3 Abundance: Heatmap of the differential species
+```{r}
+#ms.species =read.xls("results/WOL_shogun/humann2/Linear_regression/disease/all/Linear_coefficient_metagenomics_species_MS_all_sex_age_bmi_fixed_house_site_random.xlsx", sheet =1, head=T,as.is=T)
+ms.species =read.xls("results/WOL_shogun/Linear_regression/disease/all/Linear_coefficient_metagenomics_species_MS_all_sex_age_bmi_fixed_house_site_random.xlsx", sheet =1, head=T,as.is=T)
+
+#ms.species = ms.species[ms.species$fdr_diseaseMS < 0.05 & abs(ms.species$Coef_diseaseMS) >= 0.005 , ]
+ms.species = ms.species[ms.species$fdr_diseaseMS < 0.05 , ]
+ms.species = ms.species[order(ms.species$Coef_diseaseMS,decreasing = T), ]
+
+ms.species.rel = taxa.list.ast[[6]][match(ms.species$taxonomy,rownames(taxa.list.ast[[6]])), seqmeta[,"iMSMS_ID"]]
+
+
+ms.data = merge(t(ms.species.rel),seqmeta, by = "row.names")
+
+rownames(ms.data) = ms.data$Row.names
+annotation = data.frame(disease = factor(ms.data$disease),treatment = factor(ms.data$treatment_status),site = factor(ms.data$site))
+
+rownames(annotation) = ms.data$iMSMS_ID
+anno_cols = list(disease = disease.cols, site = Site.cols, treatment = treatment.cols)
+
+data = t(ms.data[,colnames(ms.data) %in% ms.species$taxonomy])
+annotation = annotation[order(annotation$disease), ]
+data = data[,match(rownames(annotation), colnames(data))]
+
+pheatmap(data,annotation = annotation , annotation_colors = anno_cols ,cluster_rows = F, cluster_cols =F, border_color = NA,show_colnames = F, scale ="none")
+
+pheatmap(data,annotation = annotation, annotation_colors = anno_cols, cluster_cols = T, border_color = NA,show_colnames = F,color = c(colorRampPalette(c("white","#21409A"))(length(seq(0,max(data),by = 0.1)))),breaks =seq(0,max(data),by = 0.1))
+```
+
+#### 3.2.4 Coeficient: Heatmap of differential features
+##### Species-disease course
+```{r}
+# list differential files 
+# Untreated/treated MS/RRMS/PMS - HHC
+diff.file = list.files(path = "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/",pattern = "species.*reatedRRMS_HHC.*xlsx",full.names = T)
+
+species.diff = lapply(diff.file,read.xls, head=T,sheet =1 ,as.is=T)
+
+source("scripts/CoefHeatmap.R")
+dir.out= "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course_heatmap/"
+# fdr
+CoefHeatmap(diff.species = species.diff[c(1,3,2)], fdr = 0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05_species.pdf",sep=""), width = 6, height =5)
+
+# pvalue + coef
+CoefHeatmap(diff.species = species.diff[c(1,3,2)], fdr = NULL,colnames = c("MS", "RRMS","PMS"),out.file = paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_species.pdf",sep=""), width = 6, height =6)
+
+#fdr
+CoefHeatmap(diff.species = species.diff[c(4,6,5)], fdr = 0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05.pdf",sep=""), width = 7, height =6)
+
+# pvalue + coef
+CoefHeatmap(diff.species = species.diff[c(4,6,5)], fdr = NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_species.pdf",sep=""), width = 6.5, height =6)
+
+# treated vs untreated
+diff.file = list.files(path = "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/",pattern = "species.*Treated.*untreated.*xlsx",full.names = T)
+species.diff = lapply(diff.file,read.xls, head=T,sheet =1 ,as.is=T)
+names(species.diff) = c("MS","PMS","RRMS")
+
+CoefHeatmap(diff.species = species.diff[c(1,3,2)], fdr = NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_untreatedMS_heatmap_p0.05_coef_species.pdf",sep=""), width = 6.6, height =5)
+```
+
+##### Pathway-disease course
+```{r}
+path.diff.file = list.files(path = "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/",pattern = "class3.*HHC.*xlsx|class4.*HHC.*xlsx|class2.*HHC.*xlsx|class5.*HHC.*xlsx",full.names = T)
+
+path.diff = lapply(path.diff.file,read.xls, head=T,sheet =1 ,as.is=T)
+dir.out= "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course_heatmap/"
+
+CoefHeatmap(diff.species = path.diff[c(1,3,2)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class2.pdf",sep=""), width = 6.5, height =2)
+CoefHeatmap(diff.species = path.diff[c(1,3,2)], fdr =0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05_coef_pathway_class2.pdf",sep=""), width = 6.5, height =4)
+
+CoefHeatmap(diff.species = path.diff[c(4,6,5)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class2.pdf",sep=""), width = 6.5, height =3)
+CoefHeatmap(diff.species = path.diff[c(4,6,5)], fdr =0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05_coef_pathway_class2.pdf",sep=""), width = 6.5, height =3)
+
+CoefHeatmap(diff.species = path.diff[c(7,9,8)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class3.pdf",sep=""), width = 6.5, height =4)
+
+
+CoefHeatmap(diff.species = path.diff[c(10,12,11)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class3.pdf",sep=""), width =6.5, height = 6)
+
+
+CoefHeatmap(diff.species = path.diff[c(13,15,14)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class4.pdf",sep=""), width = 7, height = 5)
+
+CoefHeatmap(diff.species = path.diff[c(13,15,14)], fdr =0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05_pathway_class4.pdf",sep=""), width = 7, height = 8)
+
+CoefHeatmap(diff.species = path.diff[c(16,18,17)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class4.pdf",sep=""), width =7, height = 6)
+
+CoefHeatmap(diff.species = path.diff[c(16,18,17)], fdr =0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05_pathway_class4.pdf",sep=""), width = 7, height =5)
+
+
+CoefHeatmap(diff.species = path.diff[c(19,21,20)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class.pdf",sep=""), width = 14, height = 5)
+
+CoefHeatmap(diff.species = path.diff[c(19,21,20)], fdr =0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05_pathway_class.pdf",sep=""), width = 4, height = 8)
+
+
+path.diff2 = lapply(path.diff[c(19,21,20)], function(x){
+  x$id =unlist(sapply(x$taxonomy, function(x) unlist(strsplit(x,": "))[1]))
+  x$class = metacyc.path[match(x$id,metacyc.path$Pathways), "class4"]
+  x$taxonomy = paste(x$class, x$taxonomy, sep= "; ")
+  x
+})
+
+CoefHeatmap(diff.species = path.diff2, fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class_class4.pdf",sep=""), width = 14, height = 10)
+
+CoefHeatmap(diff.species = path.diff2, fdr =0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05_pathway_class_class4.pdf",sep=""), width = 14, height = 8)
+
+CoefHeatmap(diff.species = path.diff[c(22,24,23)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class.pdf",sep=""), width =14, height = 6)
+
+CoefHeatmap(diff.species = path.diff[c(22,24,23)], fdr =0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05_pathway_class.pdf",sep=""), width = 14, height =5)
+
+
+path.diff3 = lapply(path.diff[c(22,24,23)], function(x){
+  x$id =unlist(sapply(x$taxonomy, function(x) unlist(strsplit(x,": "))[1]))
+  x$class = metacyc.path[match(x$id,metacyc.path$Pathways), "class5"]
+  x$taxonomy = paste(x$class, x$taxonomy, sep= "; ")
+  x
+})
+
+CoefHeatmap(diff.species = path.diff3, fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_p0.05_coef_pathway_class_class5.pdf",sep=""), width = 14, height = 10)
+
+CoefHeatmap(diff.species = path.diff3, fdr =0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "UntreatedMS_RRMS_PMS_HHC_heatmap_fdr0.05_pathway_class_class4.pdf",sep=""), width = 14, height = 5)
+
+
+# treated vs untreated
+path.diff.file = list.files(path = "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/",pattern = "class2.*Treated.*untreated.*xlsx|class3.*Treated.*untreated.*xlsx|class4.*Treated.*untreated.*xlsx|class5.*Treated.*untreated.*xlsx",full.names = T)
+
+path.diff = lapply(path.diff.file,read.xls, head=T,sheet =1 ,as.is=T)
+
+CoefHeatmap(diff.species = path.diff[c(1,3,2)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_untreatedMS_heatmap_p0.05_coef_pathway_class2.pdf",sep=""), width = 6, height =3)
+CoefHeatmap(diff.species = path.diff[c(1,3,2)], fdr =0.05,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_untreatedMS_heatmap_fdr0.05_pathway_class2.pdf",sep=""), width = 6, height =2,cluster_rows = F)
+
+
+
+CoefHeatmap(diff.species = path.diff[c(4,6,5)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_untreatedMS_heatmap_p0.05_coef_pathway_class3.pdf",sep=""), width = 6, height =3)
+
+CoefHeatmap(diff.species = path.diff[c(7,9,8)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_untreatedMS_heatmap_p0.05_coef_pathway_class4.pdf",sep=""), width = 6, height =3)
+
+
+CoefHeatmap(diff.species = path.diff[c(10,12,11)], fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_untreatedMS_heatmap_p0.05_coef_pathway_class.pdf",sep=""), width = 13, height =8)
+
+# annotate class with higher level
+path.diff2 = lapply( path.diff[c(10,12,11)], function(x){
+  x$id =unlist(sapply(x$taxonomy, function(x) unlist(strsplit(x,": "))[1]))
+  x$class = metacyc.path[match(x$id,metacyc.path$Pathways), "class4"]
+  x$taxonomy = paste(x$class, x$taxonomy, sep= "; ")
+  x
+})
+
+CoefHeatmap(diff.species = path.diff2, fdr =NULL,colnames = c("MS", "RRMS","PMS"),out.file =paste(dir.out, "TreatedMS_untreatedMS_heatmap_p0.05_coef_pathway_class_class4.pdf",sep=""), width = 15, height =8)
+
+```
+
+
+##### Species-treatment
+```{r}
+treat.diff.file = list.files(path = "results/WOL_shogun/Linear_regression/Linear_filter_variance/treatment_RRMSonly/",pattern = "species.*HHC.*xlsx|species.*untreated.*xlsx",full.names = T)
+treat.diff.file[[13]] = "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_species_UntreatedPMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx"
+
+species.diff = lapply(treat.diff.file,read.xls, head=T,sheet =1 ,as.is=T)
+
+dir.out ="results/WOL_shogun/Linear_regression/Linear_filter_variance/treatment_allsamples_heatmap/"
+CoefHeatmap(diff.species = species.diff[c(13,1,3,5,7,9,11)], fdr =NULL,colnames = c( "Untreated", treatments[c(1,3,2,4,5,6)]),out.file =paste(dir.out, "Treatments_untreated_HHC_heatmap_p0.05_coef_species2.pdf",sep=""), width = 6, height =8, angle_col = 90)
+
+CoefHeatmap(diff.species = species.diff[c(2,4,6,8,10,12)], fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_untreated_heatmap_p0.05_coef_species.pdf",sep=""), width = 6, height =5, angle_col = 90)
+
+
+```
+
+
+##### Pathway-treatment
+```{r}
+treat.diff.file = list.files(path = "results/WOL_shogun/Linear_regression/Linear_filter_variance/treatment_RRMSonly//",pattern = "class2.*HHC.*xlsx|class3.*HHC.*xlsx|class4.*HHC.*xlsx|class5.*HHC.*xlsx",full.names = T)
+treat.diff.file[25] = "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_class4_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx"
+treat.diff.file[26] = "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_class3_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx"
+treat.diff.file[27] = "results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_class5_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx"
+
+path.diff = lapply(treat.diff.file,read.xls, head=T,sheet =1 ,as.is=T)
+dir.out ="results/WOL_shogun/Linear_regression/Linear_filter_variance/treatment_RRMSonly_heatmap/"
+
+CoefHeatmap(diff.species = path.diff[c(1:6)], fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_HHC_heatmap_p0.05_coef_pathway_class2.pdf",sep=""), width = 7, height =5, angle_col = 90)
+
+CoefHeatmap(diff.species = path.diff[c(1:6)], fdr =0.05,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_HHC_heatmap_fdr0.05_coef_pathway_class2.pdf",sep=""), width = 7, height =5, angle_col = 90)
+
+CoefHeatmap(diff.species = path.diff[c(1:6)+6], fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_HHC_heatmap_p0.05_coef_pathway_class3.pdf",sep=""), width = 7, height =5, angle_col = 90)
+
+CoefHeatmap(diff.species = path.diff[c(1:6)+6], fdr =0.05,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_HHC_heatmap_fdr0.05_pathway_class3.pdf",sep=""), width = 6, height =2, angle_col = 90,cluster_rows = F)
+
+CoefHeatmap(diff.species = path.diff[c(19,7:12)+6], fdr =NULL,colnames =c("Untreated", treatments[c(1,3,2,4,5,6)]),out.file =paste(dir.out, "Treatments_untreated_HHC_heatmap_p0.05_coef_pathway_class4.pdf",sep=""), width = 7, height =6, angle_col = 90)
+
+CoefHeatmap(diff.species = path.diff[c(19,7:12)+6], fdr =0.05,colnames =c("Untreated", treatments[c(1,3,2,4,5,6)]),out.file =paste(dir.out, "Treatments_untreated_HHC_heatmap_fdr0.05_coef_pathway_class4.pdf",sep=""), width = 7, height =2, angle_col = 90,cluster_rows = F)
+
+CoefHeatmap(diff.species = path.diff[c(20,1:6)+6], fdr =NULL,colnames =c("Untreated", treatments[c(1,3,2,4,5,6)]),out.file =paste(dir.out, "Treatments_untreated_HHC_heatmap_p0.05_coef_pathway_class3.pdf",sep=""), width = 7, height =6, angle_col = 90)
+
+CoefHeatmap(diff.species = path.diff[c(13:18)+6], fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_HHC_heatmap_p0.05_coef_pathway_class.pdf",sep=""), width = 13, height =12, angle_col = 90)
+
+CoefHeatmap(diff.species = path.diff[c(13:18)+6], fdr =0.05,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_HHC_heatmap_fdr0.05_pathway_class.pdf",sep=""), width = 13, height =4, angle_col = 90)
+
+path.diff2 = lapply( path.diff[(13:18)+6], function(x){
+  x$id =unlist(sapply(x$taxonomy, function(x) unlist(strsplit(x,": "))[1]))
+  x$class = metacyc.path[match(x$id,metacyc.path$Pathways), "class4"]
+  x$taxonomy = paste(x$class, x$taxonomy, sep= "; ")
+  x
+})
+CoefHeatmap(diff.species = path.diff2, fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_HHC_heatmap_p0.05_coef_pathway_class_class4.pdf",sep=""), width = 14, height =12, angle_col = 90)
+
+CoefHeatmap(diff.species = path.diff2, fdr =0.05,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_HHC_heatmap_fdr0.05_pathway_class_class4.pdf",sep=""), width = 14, height =4, angle_col = 90)
+CoefHeatmap(diff.species = path.diff[c(27,c(13:18)+6)], fdr =NULL,colnames = c("Untreated", treatments[c(1,3,2,4,5,6)]),out.file =paste(dir.out, "Treatments_untreated_HHC_heatmap_p0.05_coef_pathway_class.pdf",sep=""), width = 13, height =12, angle_col = 90)
+CoefHeatmap(diff.species = path.diff[c(27,c(13:18)+6)], fdr =0.05,colnames = c("Untreated", treatments[c(1,3,2,4,5,6)]),out.file =paste(dir.out, "Treatments_untreated_HHC_heatmap_fdr0.05_coef_pathway_class.pdf",sep=""), width = 13, height =4, angle_col = 90)
+
+path.diff2 = lapply( path.diff[c(27,c(13:18)+6)], function(x){
+  x$id =unlist(sapply(x$taxonomy, function(x) unlist(strsplit(x,": "))[1]))
+  x$class = metacyc.path[match(x$id,metacyc.path$Pathways), "class4"]
+  x$taxonomy = paste(x$class, x$taxonomy, sep= "; ")
+  x
+})
+
+CoefHeatmap(diff.species = path.diff2, fdr =NULL,colnames = c("Untreated", treatments[c(1,3,2,4,5,6)]),out.file =paste(dir.out, "Treatments_untreated_HHC_heatmap_p0.05_coef_pathway_class_class4.pdf",sep=""), width = 14, height =12, angle_col = 90)
+CoefHeatmap(diff.species = path.diff2, fdr =0.05,colnames = c("Untreated", treatments[c(1,3,2,4,5,6)]),out.file =paste(dir.out, "Treatments_untreated_HHC_heatmap_fdr0.05_coef_pathway_class_class4.pdf",sep=""), width = 14, height =4, angle_col = 90)
+## treatment vs untreated
+treat.diff.file = list.files(path = "results/WOL_shogun/Linear_regression/Linear_filter_variance/treatment_RRMSonly//",pattern = "class2.*untreated.*xlsx|class3.*untreated.*xlsx|class4.*untreated.*xlsx|class5.*untreated.*xlsx",full.names = T)
+
+path.diff = lapply(treat.diff.file,read.xls, head=T,sheet =1 ,as.is=T)
+
+CoefHeatmap(diff.species = path.diff[c(1:6)], fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_untreated_heatmap_p0.05_coef_pathway_class2.pdf",sep=""), width = 7, height =3, angle_col = 90)
+
+CoefHeatmap(diff.species = path.diff[c(1:6)+6], fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_untreated_heatmap_p0.05_coef_pathway_class3.pdf",sep=""), width = 7, height =3, angle_col = 90)
+CoefHeatmap(diff.species = path.diff[c(7:12)+6], fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_untreated_heatmap_p0.05_coef_pathway_class4_2.pdf",sep=""), width = 7, height =6, angle_col = 90)
+CoefHeatmap(diff.species = path.diff[c(13:18)+6], fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_untreated_heatmap_p0.05_coef_pathway_class.pdf",sep=""), width = 13, height =12, angle_col = 90)
+
+path.diff2 = lapply( path.diff[c(13:18)+6], function(x){
+  x$id =unlist(sapply(x$taxonomy, function(x) unlist(strsplit(x,": "))[1]))
+  x$class = metacyc.path[match(x$id,metacyc.path$Pathways), "class4"]
+  x$taxonomy = paste(x$class, x$taxonomy, sep= "; ")
+  x
+})
+CoefHeatmap(diff.species = path.diff2, fdr =NULL,colnames = treatments[c(1,3,2,4,5,6)],out.file =paste(dir.out, "Treatments_untreated_heatmap_p0.05_coef_pathway_class_class4.pdf",sep=""), width = 14, height =12, angle_col = 90)
+```
+
+### 3.3 Feature ~ treatments
+```{r}
+dir.out = "results/WOL_shogun/humann2/Linear_regression/treatments/"
+if(! file.exists(dir.out)){
+  dir.create(dir.out)
+}
+for(name in names(treatment.seqmeta)){
+  for(feature in features[1:6]){
+    metares = linear_regression(rel.data = taxa.list.ast[[feature]], condition = treatment.seqmeta[[name]],filter =T,fixed.var = c("disease","sex", "age","bmi"),levels =c("Control", "MS"),house.adjust = T, site =T,arcsin.transform = F,  taxa = feature,out.file = paste(paste(dir.out, "/Linear_coefficient_metagenomics", sep=""),feature, "MS", name, "_control_age_sex_bmi_fixed_house_site_random.xlsx",sep="_"))
+    sign = metares[metares$fdr_diseaseMS <= 0.05, ]
+    if(nrow(sign) == 0){
+      sign = metares[metares$Pr_diseaseMS <= 0.05,]
+      padjust =FALSE
+      prefix = "uncorrectedP"
+    }else{
+      padjust =TRUE
+      prefix = "fdr"
+    }
+    if(nrow(sign) <= 5){
+      height = (nrow(sign) +1)*0.6
+      width =10
+    }else if(nrow(sign) <=15) {
+      height = nrow(sign)*0.4
+      width = 11
+    }else{
+      height = nrow(sign)*0.2
+      width = 11
+    }
+    linear_regression_plot(metares, taxa = feature, disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file =paste(paste(dir.out, "/Linear_coefficient_metagenomics", sep=""),feature, "MS", name, "_control_age_sex_bmi_fixed_house_site_random",prefix, ".pdf",sep="_"),width =width, height =height,taxaname = F, padjust = padjust)
+  }
+}
+# heatmap the significant species in treatment groups
+files = list.files(pattern = "species_*.*.xlsx", path = dir.out,full.names = T)
+treat.linear = lapply(files, function(x){
+  y = read.xls(x, head=T,as.is=T,sheet =1)
+  y
+})
+treat.sign = lapply(treat.linear, function(x){
+  #x = x[x$Pr_diseaseMS <= 0.05,]
+  x = x[x$fdr_diseaseMS <= 0.05,]
+  x$taxonomy
+})
+#names(treat.sign) = c("PPMS","RRMS","SPMS")
+names(treat.sign) = treatments[order(treatments)]
+treat.sign2 = lapply(names(treat.sign), function(x){
+  data.frame(species = treat.sign[[x]], treatment = x, stringsAsFactors = F)
+})
+```
+
+####3.3.1 treatment-treatment
+```{r}
+ft.data= taxa.list.ast[[6]]
+feature = "species"
+#pathway
+ft.data= humann2.path.rela
+feature = "pathway"
+
+trs = combn(treatments,2)
+rrmsseqmeta= seqmeta[seqmeta$disease_course == "RRMS", ]
+dir.out=  "results/WOL_shogun/Linear_regression/disease_course/"
+
+for(i in 1:ncol(trs)){
+  trcomp= trs[,i]
+  if("Off" %in% trcomp){
+    levels = c(trcomp[trcomp!="Off"], "Off")
+  }else{
+    levels = trcomp[order(trcomp)]
+  }
+  
+  metares = linear_regression(rel.data = ft.data,arcsin.transform =T, filter =T, fixed.var = c("treatment_type","sex", "age", "bmi"),levels =levels,house.adjust = F, site =T, condition = rrmsseqmeta[rrmsseqmeta$treatment_type %in% trcomp, ], taxa = "pathway", out.file = paste(paste(dir.out, "/Linear_coefficient_metagenomics", sep=""),feature,paste(trcomp,collapse = "_"), "sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+  if(any(grepl("[(]", trcomp))){
+    colnames(metares) =gsub("[(]|[)]",".",colnames(metares))
+    trcomp2= gsub("[(]|[)]",".",trcomp)
+    colnames(metares) = gsub(paste("treatment_type", trcomp2[2],sep=""), "diseaseMS", colnames(metares))
+  }else{
+    if("Off" %in% trcomp){
+      colnames(metares) = gsub(paste("treatment_type", "Off",sep=""), "diseaseMS", colnames(metares))
+    }else{
+      colnames(metares) = gsub(paste("treatment_type", trcomp[2],sep=""), "diseaseMS", colnames(metares))
+    }
+    
+  }
+  
+  sign = metares[metares$fdr_diseaseMS <= 0.05, ]
+  if(nrow(sign) == 0){
+    sign = metares[metares$Pr_diseaseMS <= 0.05,]
+    padjust =FALSE
+    prefix = "uncorrectedP"
+  }else{
+    padjust =TRUE
+    prefix = "fdr"
+  }
+  if(nrow(sign) <= 5){
+    height = (nrow(sign) +1)*0.6
+    width =10
+  }else if(nrow(sign) <=15) {
+    height = nrow(sign)*0.4
+    width = 11
+  }else{
+    height = nrow(sign)*0.2
+    width = 11
+  }
+  linear_regression_plot(metares, taxa = "pathway", disease.only = T, group ="disease",order.group = "MS",col.disease = treatments.cols[[trcomp[1]]],out.file =paste(paste(dir.out, "/Linear_coefficient_metagenomics", sep=""),feature,paste(trcomp,collapse = "_"), "_control_age_sex_bmi_fixed_house_site_random",prefix, ".pdf",sep="_"),width =width, height =height,taxaname = F, padjust = padjust)
+  
+}
+```
+
+#### 3.3.2 treatment-untreated
+```{r}
+# treatment vs untreated (sampling samples as same number)
+trs.off=  treatments[-5]
+trs.number = table(seqmeta[,c("disease_course","treatment_type")])[3,]
+sample.untreated  = seqmeta[seqmeta$treatment_type == "Off" ,1]
+# set.seed(2)
+samp <- matrix(NA, nrow = trs.number["interferon"], ncol = 100)
+for(i in 1:100){
+  samp[,i] <- sample(sample.untreated, size = trs.number["interferon"], replace = F)
+}
+
+sample.untreated.s = sample(sample.untreated, trs.number["interferon"],replace =F)
+
+dir.out = "results/WOL_shogun/Linear_regression/treatments/sampling/"
+if(! exists(dir.out)){
+  dir.create(dir.out)
+}
+
+name = "interferon"
+for(i  in 1:100){
+  levels= c(name, "Off")
+  if(name != "interferon"){
+    set.seed(123)
+    samples = sample(samp[,i], trs.number[name],replace =F)
+  }else{
+    samples = samp[,i]
+  }
+  
+  metares = linear_regression(rel.data = ft.data,arcsin.transform =T, filter =T, fixed.var = c("treatment_type","sex", "age", "bmi"),levels =levels,house.adjust = F, site =T, condition =seqmeta[seqmeta$treatment_type == name | seqmeta$iMSMS_ID %in% samples, ], taxa = "species", out.file = paste(paste(dir.out, "/Linear_coefficient_metagenomics", sep=""),feature,paste(name,"Off",i,collapse = "_"), "sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+  
+  
+  colnames(metares) = gsub(paste("treatment_type", "Off",sep=""), "diseaseMS", colnames(metares))
+  
+  sign = metares[metares$fdr_diseaseMS <= 0.05, ]
+  if(nrow(sign) == 0){
+    sign = metares[metares$Pr_diseaseMS <= 0.05,]
+    padjust =FALSE
+    prefix = "uncorrectedP"
+  }else{
+    padjust =TRUE
+    prefix = "fdr"
+  }
+  if(nrow(sign) <= 5){
+    height = (nrow(sign) +1)*0.6
+    width =10
+  }else if(nrow(sign) <=15) {
+    height = nrow(sign)*0.4
+    width = 11
+  }else{
+    height = nrow(sign)*0.2
+    width = 11
+  }
+  linear_regression_plot(metares, taxa = "species", disease.only = T, group ="disease",order.group = "MS",col.disease = treatments.cols[[name]],out.file =paste(paste(dir.out, "/Linear_coefficient_metagenomics", sep=""),feature,paste(name,"Off",i, collapse = "_"), "_control_age_sex_bmi_fixed_house_site_random",prefix, ".pdf",sep="_"),width =width, height =height,taxaname = F, padjust = padjust)
+}
+```
+
+
+# 4. EDSS correlation with species and pathways
+```{r}
+# compute the correlation of disease duration adjusted EDSS with microbes in untreated MS, RRMS, or PMS
+require(ppcor)
+rownames(seqmeta) =seqmeta$iMSMS_ID
+
+mssample.list = list(MS = seqmeta[seqmeta$disease %in% c("MS") & as.numeric(seqmeta$uGMSSS) >0 & seqmeta$treatment_status == "Untreated", ],
+                     RRMS = seqmeta[seqmeta$disease_course %in% c("RRMS") & as.numeric(seqmeta$uGMSSS) >0 & seqmeta$treatment_status == "Untreated", ],
+                     PMS = seqmeta[seqmeta$disease_course %in% c("PPMS", "SPMS") & as.numeric(seqmeta$uGMSSS) >0 & seqmeta$treatment_status == "Untreated", ])
+
+hcsample.list =lapply(mssample.list,function(x){
+  y = seqmeta[seqmeta$disease == "Control" & seqmeta$household %in% x$household,]
+  y
+}) 
+
+spearman.species = spearman.path = list()
+spearman.list = list()
+for(diseasename in names(mssample.list)){
+  data.list = taxa.list.rel
+  data.list.ms = lapply(data.list, function(x){
+    y = x[,colnames(x) %in% mssample.list[[diseasename]]$iMSMS_ID,drop=F]
+    y
+  })
+  path.ms = humann2.path.rela[,colnames(humann2.path.rela) %in% mssample.list[[diseasename]]$iMSMS_ID,drop=F]
+  data.list.ms[["pathway"]] = path.ms
+  # filter the features with presence in less than 50% samples
+  data.list.ms.filter = lapply(data.list.ms, function(x){
+    x = x[rowSums(x >0) >= ncol(x)*0.50, ]
+    x
+  })
+  
+  data.list.ms.meta = lapply(data.list.ms.filter, function(x){
+    y = t(x)
+    y = merge(y, seqmeta, by = "row.names")
+    y
+  })
+  feature.number = lapply(data.list.ms.filter, nrow)
+  
+  for(i in 1:length(data.list.ms.meta)){
+    y = data.list.ms.meta[[i]]
+    cor.res = matrix(NA, nrow = feature.number[[i]], ncol=2 )
+    for(n in 1:feature.number[[i]]){
+      name = colnames(y)[n+1]
+      value = y[,c(name,"uGMSSS", "age","bmi")]
+      value = value[value[,name] >0,]
+      
+      #value$sex =mygsub(c("F", "M"),c(1,2),value$sex)
+      # sample size of 7 was chosen by 
+      if(nrow(value) >= 7){
+        value = apply(value, 2, as.numeric)
+        res = pcor.test(x = value[,1], y =value[,"uGMSSS"],z = value[,c("age","bmi")], method = "spearman")
+        cor.res[n,1] = res$estimate
+        cor.res[n,2] = res$p.value
+      }else{ 
+        cor.res[n,1] = NA
+        cor.res[n,2] = NA 
+      }
+    }
+    
+    colnames(cor.res) = c("r","pvalue")
+    rownames(cor.res) = colnames(y)[2:(feature.number[[i]]+1)]
+    
+    cor.res = data.frame(cor.res,stringsAsFactors = F)
+    cor.res= cor.res[!is.na(cor.res$r),]
+    cor.res$fdr = p.adjust(cor.res$pvalue, method= "fdr")
+    cor.res = cor.res[!is.na(cor.res$fdr), ]
+    #cor.res = cor.res[cor.res$fdr < 0.05, ]
+    spearman.list[[i]] = cor.res
+  }
+  
+  # add average abundance of species in HHC or RRMS/PMS
+  x = data.list.ms[[6]]
+  avg = apply(x,1,mean)
+  hc.avg = apply(taxa.list.rel[[6]][,hcsample.list[[diseasename]]$iMSMS_ID], 1, mean)
+  
+  
+  spearman.list[[6]]$msabundance = avg[match(rownames(spearman.list[[6]]),names(avg))]
+  spearman.list[[6]]$hcabundance = hc.avg[match(rownames(spearman.list[[6]]),names(hc.avg))]
+  
+  spearman.list[[6]]$presence = unlist(sapply(rownames(spearman.list[[6]]), function(z) {y = as.numeric(x[rownames(x) == z,]); len = length(y[y >0])}))
+  
+  # pathway
+  x = data.list.ms[[7]]
+  avg = apply(x,1,mean)
+  hc.avg = apply(humann2.path.rela[,colnames(humann2.path.rela) %in% hcsample.list[[diseasename]]$iMSMS_ID], 1, mean)
+  
+  spearman.list[[7]]$msabundance = avg[match(rownames(spearman.list[[7]]),names(avg))]
+  spearman.list[[7]]$hcabundance = hc.avg[match(rownames(spearman.list[[7]]),names(hc.avg))]
+  
+  spearman.list[[7]]$presence = unlist(sapply(rownames(spearman.list[[7]]), function(z) {y = as.numeric(x[rownames(x) == z,]); len = length(y[y >0])}))
+  names(spearman.list)  = names(data.list.ms)
+  
+  spearman.species[[diseasename]] = spearman.list[["species"]]
+  spearman.path[[diseasename]] = spearman.list[["pathway"]]
+  
+  #WriteXLS(spearman.list,paste( "results/WOL_shogun/EDSS_correlation/Adjust_age_bmi/Microbiome_features_untreated_", diseasename, "_ugMSSS_spearman_correlation_filter_50presence.xlsx",sep=""),row.names =T)
+}
+```
+
+##4.1 Correlation plot
+```{r}
+# heatmap for species/pathway
+spearman.data = spearman.species
+#spearman.data = spearman.path
+signsps = lapply(spearman.data,function(x){
+  y = rownames(x[x$pvalue < 0.05, ])
+  y
+})
+signsps  = unique(unlist(signsps))
+signsps.noms = lapply(spearman.data[2:3],function(x){
+  y = rownames(x[x$pvalue < 0.05, ])
+  y
+})
+signsps.noms  = unique(unlist(signsps.noms))
+for(name in names(spearman.data )){
+  colnames(spearman.data[[name]]) = paste(name,colnames(spearman.data[[name]]),sep="")
+  spearman.data[[name]]$species = rownames(spearman.data[[name]])
+}
+spearman.data.r = Reduce(function(x,y) merge(x,y,by="species",all =T),spearman.data)
+spearman.data.sign = spearman.data.r[spearman.data.r$species %in% signsps.noms, ]
+rownames(spearman.data.sign) = spearman.data.sign$species
+spearman.data.sign =spearman.data.sign[,-1]
+
+spearman.data.sign.r = spearman.data.sign[,c("MSr", "RRMSr", "PMSr")]
+spearman.data.sign.p = spearman.data.sign[,c("MSpvalue", "RRMSpvalue", "PMSpvalue")]
+spearman.data.sign.abun = spearman.data.sign[,c("MShcabundance", "MSmsabundance","RRMShcabundance","RRMSmsabundance","PMShcabundance", "PMSmsabundance")]
+pvalues_display = spearman.data.sign.p
+pvalues_display[pvalues_display > 0.05]= NA
+pvalues_display[pvalues_display < 0.001]= "***"
+pvalues_display[pvalues_display != "***" & pvalues_display < 0.01]= "**"
+pvalues_display[pvalues_display != "**" & pvalues_display != "***" & pvalues_display < 0.05]= "*"
+pvalues_display[is.na(pvalues_display)] = ""
+
+breaksList1 = seq(-0.4, 0,by = 0.001)
+breaksList2 = seq(0.001, 0.4,by = 0.001)
+# plot MS, RRMS, PMS
+pheatmap( spearman.data.sign.r,display_numbers =pvalues_display,border_color = "white", color = c(colorRampPalette(c("#21409A", "white"))(length(breaksList1)),colorRampPalette(c( "white","firebrick3"))(length(breaksList2))),breaks = c(breaksList1, breaksList2),cluster_rows = T,cluster_cols = F)
+
+# plot RRMS significant pathways
+pheatmap(spearman.data.sign.r[pvalues_display[,2] !="",2:3],display_numbers =pvalues_display[pvalues_display[,2] !="",2:3],border_color = "white", color = c(colorRampPalette(c("#2166AC", "white"))(length(breaksList1)),colorRampPalette(c( "white","#B2182B" ))(length(breaksList2))),breaks = c(breaksList1, breaksList2),cluster_rows = T,cluster_cols = F)
+dev.copy2pdf(file = "results/WOL_shogun/EDSS_correlation/Adjust_age_bmi/RRMS_ugMSSS_pathway_p0.05.pdf", width =8, height =3)
+# plot abundance
+#library(RColorBrewer)
+rowclust = hclust(dist(spearman.data.sign.r[pvalues_display[,2] !="",2:3]))
+data = spearman.data.sign.abun[pvalues_display[,2] !="",3:6]
+data = data[rowclust$order,]
+#breaksList = seq(-6, -2,by = 0.01) # for species
+breaksList = seq(-5, -4,by = 0.01)
+pheatmap(log10(data),border_color = "white", color = colorRampPalette(brewer.pal(9,"Oranges"))(length(breaksList)),breaks = breaksList,cluster_rows = F,cluster_cols = F)
+dev.copy2pdf(file = "results/WOL_shogun/EDSS_correlation/Adjust_age_bmi/RRMS_ugMSSS_pathway_abundance_p0.05.pdf", width =8, height =3)
+
+# plot PMS significant pathways
+pheatmap(spearman.data.sign.r[pvalues_display[,3] !="",2:3],display_numbers =pvalues_display[pvalues_display[,3] !="",2:3],border_color = "white", color = c(colorRampPalette(c("#2166AC", "white"))(length(breaksList1)),colorRampPalette(c( "white","#B2182B"))(length(breaksList2))),breaks = c(breaksList1, breaksList2),cluster_rows = T,cluster_cols = F)
+dev.copy2pdf(file = "results/WOL_shogun/EDSS_correlation/Adjust_age_bmi/PMS_ugMSSS_pathway_p0.05.pdf", width =8, height =3)
+
+# plot abundance
+rowclust = hclust(dist(spearman.data.sign.r[pvalues_display[,3] !="",2:3]))
+data = spearman.data.sign.abun[pvalues_display[,3] !="",3:6]
+data = data[rowclust$order,]
+# breaksList = seq(-6, -2,by = 0.01) for species
+breaksList = seq(-6, -3,by = 0.01)
+pheatmap(log10(data),border_color = "white", color =  colorRampPalette(brewer.pal(9,"Oranges"))(length(breaksList)),breaks = breaksList,cluster_rows = F,cluster_cols = F)
+dev.copy2pdf(file = "results/WOL_shogun/EDSS_correlation/Adjust_age_bmi/PMS_ugMSSS_pathway_abundance_p0.05.pdf", width =8, height =3)
+
+# check overlap with differential species 
+rrms.sign = read.xls("results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_species_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sheet =1 ,head=T,as.is=T)
+rrms.sign = rrms.sign[rrms.sign$Pr_diseaseMS < 0.05, "taxonomy"]
+intersect(rrms.sign, signsps.noms$RRMS)
+
+pms.sign = read.xls("results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_species_UntreatedPMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sheet =1 ,head=T,as.is=T)
+
+pms.sign = pms.sign[pms.sign$Pr_diseaseMS < 0.05, "taxonomy"]
+intersect(pms.sign, signsps.noms$PMS)
+# scatter plot 
+# select species correlation with p<0.05 and average abudance > 0.001
+x = taxa.list.rel[[6]]
+x = asin(sqrt(x))
+y = merge(t(x),mssamples,by = "row.names")
+
+g1 = ggscatter(y, x= "uGMSSS", y = "Collinsella aerofaciens", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "spearman", xlab ="uGMSSS", ylab = "Relative abundance",size = 1.5,color= disease_course.cols["RRMS"])  +ggtitle("Collinsella aerofaciens")
+g2 = ggscatter(y, x= "uGMSSS", y = "Streptococcus thermophilus", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "spearman", xlab ="uGMSSS", ylab = "Relative abundance",size = 1.5,color= disease_course.cols["RRMS"])  +ggtitle("Streptococcus thermophilus")
+grid.arrange(g1,g2,nrow =1)
+
+# PMS
+y = merge(t(x),mssample.list$PMS,by = "row.names")
+
+g1 = ggscatter(y, x= "uGMSSS", y = "Prevotella buccalis", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "spearman", xlab ="uGMSSS", ylab = "Relative abundance",size = 1.5,color= disease_course.cols["MS"])  +ggtitle("Prevotella buccalis")
+g2 = ggscatter(y, x= "uGMSSS", y = "Streptococcus thermophilus", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "spearman", xlab ="uGMSSS", ylab = "Relative abundance",size = 1.5,color= disease_course.cols["MS"])  +ggtitle("Streptococcus thermophilus")
+grid.arrange(g1,g2,nrow =1)
+
+##### Linear regression module
+# untreated samples only
+mssamples.untreated = mssamples[mssamples$treatment_status == "Untreated", ]
+mssamples.treated = mssamples[mssamples$treatment_status == "Treated", ]
+
+source("~/Dropbox/1.project/iMSMS_round2/scripts/linear_regression_ugmsss.R")
+dir.out = "results/WOL_shogun/Linear_regression/uGMSSS/"
+for(feature in names(data.list.ms)[2:6]){
+  metares = linear_regression_ugmsss(rel.data = data.list.ms[[feature]],arcsin.transform =T, filter =T, fixed.var = c("uGMSSS","sex", "age", "bmi"),house.adjust = F, site =T, condition =mssamples.untreated, taxa =feature, out.file = paste(paste(dir.out, "/Linear_coefficient_humann2_genes", sep=""),feature,"uGMSSS", "sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+  colnames(metares) = gsub("uGMSSS", "diseaseMS", colnames(metares))
+  
+  sign = metares[metares$fdr_diseaseMS <= 0.05, ]
+  if(nrow(sign) == 0){
+    sign = metares[metares$Pr_diseaseMS <= 0.05,]
+    padjust =FALSE
+    prefix = "uncorrectedP"
+  }else{
+    padjust =TRUE
+    prefix = "fdr"
+  }
+  if(nrow(sign) <= 5){
+    height = (nrow(sign) +1)*0.6
+    width =10
+  }else if(nrow(sign) <=15) {
+    height = nrow(sign)*0.4
+    width = 11
+  }else{
+    height = nrow(sign)*0.2
+    width = 11
+  }
+  linear_regression_plot(metares, taxa = feature, disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file =paste(paste(dir.out, "/Linear_coefficient_humann2_gene", sep=""),feature,"uGMSSS", "_age_sex_bmi_fixed_house_site_random", ".pdf",sep="_"),width =width, height =height,taxaname = F, padjust = padjust)
+  
+}
+
+# correlation plot for uGMSSS associated species
+data =merge(t(data.list.ms[[6]]),mssamples.untreated,by = "row.names")
+neg.species = c("Butyrivibrio crossotus","Roseburia intestinalis", "Butyrivibrio crossotus CAG:259")
+pos.species = c("Firmicutes bacterium CAG:475", "Alistipes finegoldii", "Collinsella aerofaciens", "Rikenella microfusus")
+neg.plot= lapply(neg.species,function(z){
+  ggscatter(data, x= "uGMSSS", y = z, add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "pearson", xlab ="uGMSSS", ylab= paste(z, "(rel. ab)",sep= " "))
+})
+pos.plot= lapply(pos.species,function(z){
+  ggscatter(data, x= "uGMSSS", y = z, add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "pearson", xlab ="uGMSSS", ylab= paste(z, "(rel. ab)",sep= " "))
+})
+require("gridExtra")
+do.call("grid.arrange", c(neg.plot, ncol=3))
+dev.copy2pdf(file = paste(dir.out, "uGMSSS_negatively_associated_species_correlation.pdf",sep="/"), width=9, height =3, useDingbats =F)
+do.call("grid.arrange", c(pos.plot, ncol=4))
+dev.copy2pdf(file = paste(dir.out, "uGMSSS_postively_associated_species_correlation.pdf",sep="/"), width=12, height =3, useDingbats =F)
+```
+
+# 5. Humann2
+## 5.1 Linear regression, pathday ~disease
+```{r}
+seqmeta.comp= c(treat.seqmeta["untreated"], disease_pro.seqmeta, treatment_untreated.seqmeta, treatment.seqmeta,adm.seqmeta.control,adm.seqmeta.untreated,adm.seqmeta.between)
+names(seqmeta.comp)[1:4]= c("untreated_MS_HHC","untreated_RRMS_HHC","untreated_PMS_HHC","untreated_PMS_RRMS")
+names(seqmeta.comp)[17:19]= paste(names(seqmeta.comp)[17:19],"HHC", sep="_")
+names(seqmeta.comp)[20:22]= paste(names(seqmeta.comp)[20:22],"untreated", sep="_")
+
+
+dir.out = "results/WOL_shogun/Linear_regression/Pathway_high_class/"
+for(feature in names(seqmeta.comp)[23:25]){
+  for(name in names(high.path)[5]){
+    if(feature %in% c("untreated_MS_HHC","untreated_RRMS_HHC","untreated_PMS_HHC")){
+      fixed.var1 = "disease"
+      levels = c("Control", "MS")
+      house.adjust  =T
+    }else if (feature == "untreated_PMS_RRMS"){
+      fixed.var1 = "pms"
+      levels =c("RRMS","PMS")
+      house.adjust =F
+    }else if (feature %in% c("Oral_Infused","Oral_Subcutaneous","Infused_Subcutaneous")){
+      fixed.var1 = "administration"
+      levels = rev(unlist(strsplit(feature, "_")))
+      house.adjust =F
+    }else if(feature %in% c("Oral_HHC","Subcutaneous_HHC","Infused_HHC", "Oral_untreated","Subcutaneous_untreated","Infused_untreated")){
+      fixed.var1 = "administration"
+      if(grepl("untreated", feature)){
+        levels = c("Untreated",unlist(strsplit(feature, "_"))[1]) 
+        house.adjust =F
+      }else{
+        levels = c("Control",unlist(strsplit(feature, "_"))[1])
+        house.adjust=T
+      }
+    }else{
+      fixed.var1 = "treatment_status"
+      if(grepl("untreated", feature)){
+        levels = c("Untreated","Treated") 
+        house.adjust =F
+      }else{
+        levels = c("Control","Treated")
+        house.adjust=T
+      }
+    }
+    
+    metares = linear_regression(rel.data = high.path[[name]],arcsin.transform =T, filter =T, fixed.var = c(fixed.var1,"sex", "age", "bmi"),levels =levels,house.adjust =house.adjust, site =T, condition =seqmeta.comp[[feature]], taxa ="pathway", out.file = paste(paste(dir.out, "/Linear_coefficient_metagenomics_pathway", sep=""), name,feature, "_sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+    
+    colnames(metares) = gsub("pmsPMS", "diseaseMS",colnames(metares) )
+    colnames(metares) = gsub("treatment_statusTreated", "diseaseMS",colnames(metares) )
+    colnames(metares) = gsub("administrationInfused|administrationOral|administrationSubcutaneous", "diseaseMS",colnames(metares))
+    
+    sign = metares[metares$fdr_diseaseMS <= 0.05, ]
+    if(nrow(sign) == 0){
+      sign = metares[metares$Pr_diseaseMS <= 0.05, ]
+      padjust =FALSE
+      prefix = "uncorrectedP"
+    }else{
+      padjust =TRUE
+      prefix = "fdr"
+    }
+    if(nrow(sign) <= 5){
+      height = (nrow(sign) +1)*0.6
+      width =10
+    }else if(nrow(sign) <=15) {
+      height = nrow(sign)*0.4
+      width = 11
+    }else{
+      height = nrow(sign)*0.2
+      width = 11
+    }
+    linear_regression_plot(metares, taxa ="pathway", disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file =paste(paste(dir.out, "/Linear_coefficient_metagenomics_pathway",sep=""), name,prefix,feature, "_random_effect.pdf",sep="_"),width =width,height =height,taxaname = F, padjust = padjust)
+  }
+}
+
+```
+
+
+## 5.2 Run humann2_associate
+```{bash}
+# normalize the table
+humann2_renorm_table -i humann2_pathabundance_subject.txt -o humann2_pathabundance_subject_relab.tsv --units  relab
+
+humann2_associate --input humann2_pathabundance_subject_relab_seqmeta.txt --last-metadatum treatment_control --focal-metadatum site --focal-type categorical --output site/humann2_path_site_stats.txt &
+
+humann2_barplot --sort sum metadata -k RdBu_r --input ../humann2_pathabundance_subject_relab_seqmeta.txt --focal-feature KDO-NAGLIPASYN-PWY --focal-metadatum site --last-metadatum treatment_control --output KDO-NAGLIPASYN-PWY.pdf --exclude-unclassified &
+
+humann2_barplot --sort dominant metadata -k RdBu_r --input humann2_pathabundance_subject_relab_seqmeta_untreated.txt --focal-feature PWY-7211  --focal-metadatum pms --last-metadatum treatments_control --output PWY-7211_dominant.pdf --exclude-unclassified  -y 0 0.00008  &
+
+humann2_barplot --sort dominant metadata -k RdBu_r --input humann2_pathabundance_subject_relab_seqmeta.txt --focal-feature ARGININE-SYN4-PWY --focal-metadatum treatment_type --last-metadatum treatment_control --output ARGININE-SYN4-PWY_dominant.pdf --exclude-unclassified  &
+
+```
+
+## 5.3 Akkermansia genes
+```{r}
+akk.genes =read.table("results/WOL_shogun/humann2/Akkermansia/Akkermansia_muci_genes.txt",head=T,as.is=T,sep="\t",comment.char = "!", row.names = 1)
+akk.genes.rel =read.table("results/WOL_shogun/humann2/Akkermansia/Akkermansia_muciniphila_genefamilies-relab.txt",head=T,as.is=T,sep="\t",comment.char = "!", row.names = 1,check.names = F)
+
+akk.gene = sumtax(akk.genes, map, id.col = "iMSMS_ID")
+akk.gene = akk.gene[,!colnames(akk.gene) %in% c("71401.0162","71402.0162")]
+
+# P22525 P33013 P76193 P76577 are uniProt proteins in the PWY0-1586 pathways
+akk.protein = c("P22525","P33013","P76193","P76577")
+akk.ecs = c("EC-2.4.1.129", "EC-3.4.16.4")
+akk.ko= c("K07258")
+ko2uniref = read.table("results/WOL_shogun/K07258.txt")
+ko2uniref =t(ko2uniref)
+
+# read AKK peptides (https://www.sciencedirect.com/science/article/pii/S0092867420312514)
+uniprots = read.csv("results/WOL_shogun/humann2/Akkermansia/Amuc/Akk_peptides.csv",head=T,as.is=T)
+
+#akk.gene.selec = akk.gene[grepl(paste(ko2uniref[,1],collapse = "|"), rownames(akk.gene)),]
+akk.gene.selec = akk.gene[grepl(paste(c(uniprots[,1],"UniRef90_B2UNH0"),collapse = "|"), rownames(akk.gene)),]
+
+akk.gene.selec2 = merge(t(akk.gene.selec), map, by ="row.names")
+#colnames(akk.gene.selec2)[2] = "UniRef90_B2UNH0"
+
+colnames(akk.gene.selec2)[2:4] = c("UniRef90_B2UL91", "UniRef90_B2UL97","UniRef90_B2UNH0")
+akk.gene.selec2[,2:4] = log10(akk.gene.selec2[,2:4])
+g= list()
+for(name in c("UniRef90_B2UL91", "UniRef90_B2UL97","UniRef90_B2UNH0")){
+  g[[name]] = ggplot(akk.gene.selec2, aes_string(x = "disease", y =  name, color ="disease")) +
+    geom_jitter(position=position_jitterdodge(0.2) )+
+    geom_boxplot(outlier.color = NA, notch=T,alpha=0.2) + ylab(paste(name, " of Akkermansia muciniphila",sep="")) + xlab("")
+}
+```
+
+
+#6.Diet - linear mixed model
+## 6.1 Species ~  HEI index
+```{r}
+load("../Dietary_questionnaires_round2/rdata/heiseqpair.rda")
+load("../Dietary_questionnaires_round2/rdata/heiseqmetapair.rda")
+heiseq = heiseqpair
+dietseqmeta = heiseqmetapair
+dietseqmeta$iMSMS_ID = gsub("-", ".", dietseqmeta$iMSMS_ID)
+rownames(dietseqmeta) = dietseqmeta$iMSMS_ID
+
+source("../iMSMS_round2/scripts/linear_regression_diet.R")
+source("../iMSMS_round2/scripts/linear_regression_plot_diet.R")
+
+dietseqmeta.disease = split(dietseqmeta, f = dietseqmeta$disease)
+dietseqmeta.disease[["all"]] = dietseqmeta
+
+# untreated MS 
+dietseqmeta.disease[["UntreatedMS"]] =dietseqmeta[dietseqmeta$treatment_status == "Untreated", ]
+
+# or
+dietseqmeta.disease = split(dietseqmeta, f = dietseqmeta$disease_control)
+
+dir.out = "results/WOL_shogun/Linear_regression/Linear_filter_variance/feature-HEI2015"
+if(!file.exists(dir.out)){
+  dir.create(dir.out)
+}
+require(reshape)
+require(ggplot2)
+for(name in names(seqmeta.comp)){
+  for(feature in names(data.list)){
+    if(name %in% group1){
+      dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/feature-HEI2015/MS"
+      if(!file.exists(dir.out)){
+        dir.create(dir.out)
+      }
+      if(grepl("HHC", name)){
+        fixed.var1 = "disease"
+        levels = c("Control", "MS")
+        house.adjust  =T
+      }else{
+        fixed.var1 = "treatment_status"
+        levels = c("Untreated", "Treated")
+        house.adjust  =F
+      }
+    }else if (name %in% group2){
+      dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/feature-HEI2015/disease_course"
+      if(!file.exists(dir.out)){
+        dir.create(dir.out)
+      }
+      if(grepl("HHC", name)){
+        fixed.var1 = "disease"
+        levels =c("Control","MS")
+        house.adjust =T
+      }else if(grepl("RRMS",name) & grepl("PMS",name)){
+        fixed.var1 = "pms"
+        levels =c("RRMS","PMS")
+        house.adjust =F
+      }else{
+        fixed.var1 = "treatment_status"
+        levels =c("Untreated","Treated")
+        house.adjust =F
+      }
+    }else if (name %in% c(group3,group5)){
+      if(name %in% group3){
+        dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/feature-HEI2015/treatment_allsamples"
+        if(!file.exists(dir.out)){
+          dir.create(dir.out)
+        }
+      }else{
+        dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/feature-HEI2015/treatment_RRMSonly"
+        if(!file.exists(dir.out)){
+          dir.create(dir.out)
+        }
+      }
+      if(grepl("HHC",name)){
+        fixed.var1 = "treatments"
+        levels = c("Control", unlist(strsplit(name, "_"))[1])
+        house.adjust =T
+      }else{
+        fixed.var1 = "treatments"
+        levels = unlist(strsplit(name, "_"))
+        levels = levels[levels!="RRMS"]
+        levels= rev(levels)
+        if("untreated" %in% levels){
+          levels = gsub("untreated", "Untreated", levels)
+        }
+        house.adjust =F
+      }
+    }else if(name %in% c(group4, group6)){
+      if(name %in% group4){
+        dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/feature-HEI2015/administration_allsamples"
+        if(!file.exists(dir.out)){
+          dir.create(dir.out)
+        }
+      }else{
+        dir.out =  "results/WOL_shogun/Linear_regression/Linear_filter_variance/feature-HEI2015/administration_RRMSonly"
+        if(!file.exists(dir.out)){
+          dir.create(dir.out)
+        }
+      }
+      fixed.var1 = "administration"
+      if(grepl("HHC", name)){
+        levels = c("Control",unlist(strsplit(name, "_"))[1]) 
+        house.adjust =T
+      }else {
+        levels = unlist(strsplit(name, "_"))
+        levels = levels[levels!="RRMS"]
+        levels= rev(levels)
+        if("untreated" %in% levels){
+          levels = gsub("untreated", "Untreated", levels)
+        }
+        house.adjust =F
+      }
+    }
+    
+    metares = linear_regression_diet(rel.data = data.list[[feature]],arcsin.transform =T, filter =T, fixed.var = c(fixed.var1,"sex", "age", "bmi"),levels =levels,house.adjust =house.adjust, site =T, condition =seqmeta.comp[[name]], taxa =feature, out.file = paste(paste(dir.out, "/Linear_coefficient_metagenomics", sep=""), feature, name, "_sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+    strs = unlist(strsplit(colnames(metares)[1], "_"))
+    if(length(strs) ==2){
+      index = strs[2]
+    }else{
+      index = paste(strs[2:length(strs)], collapse ="_")
+    }
+    
+    colnames(metares) = gsub(index, "diseaseMS",colnames(metares) )
+    
+    sign1 = metares[metares$fdr_diseaseMS <= 0.05, ]
+    padjust1 =TRUE
+    prefix1 = "fdr"
+    if(nrow(sign1) <= 5){
+      height1 = (nrow(sign1) +1)*0.6
+      width1 =10
+    }else if(nrow(sign1) <=15) {
+      height1 = nrow(sign1)*0.4
+      width1 = 11
+    }else{
+      height1 = nrow(sign1)*0.2
+      width1= 11
+    }
+    
+    sign2 = metares[metares$Pr_diseaseMS <= 0.05, ]
+    sign2 = sign2[sign2[,1] <= quantile(metares[,1],seq(0,1,0.05))["5%"] | sign2[,1] >= quantile(metares[,1],seq(0,1,0.05))["95%"], ]
+    padjust2 =FALSE
+    prefix2 = "P0.05_coef_quantile5"
+    if(nrow(sign2) <= 5){
+      height2 = (nrow(sign2) +1)*0.6
+      width2 =10
+    }else if(nrow(sign2) <=15) {
+      height2 = nrow(sign2)*0.4
+      width2 = 11
+    }else{
+      height2 = nrow(sign2)*0.2
+      width2= 11
+    }
+    if(nrow(sign1) >0){
+      linear_regression_plot(metares, taxa =feature, disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file =paste(paste(dir.out, "/Linear_coefficient_metagenomics",sep=""), feature,name,prefix1, "_random_effect.pdf",sep="_"),width =width1,height =height1,taxaname = F, padjust = padjust1)
+    }
+    
+    if(nrow(sign2) >0){
+      linear_regression_plot(sign2, taxa =feature, disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file =paste(paste(dir.out, "/Linear_coefficient_metagenomics",sep=""), feature,name,prefix2, "_random_effect_nofilter.pdf",sep="_"),width =width2,height =height2,taxaname = F, padjust = padjust2)
+    }
+  }
+}
+
+######################
+
+for(name in names(dietseqmeta.disease)){
+  # regression on all ASVs
+  res.diet = linear_regression_diet(rel.data = taxa.list.rel[[6]],arcsin.transform = T, filter =T, condition =dietseqmeta.disease[[name]],disease=name, taxa ="species", out.file = paste(dir.out, "/Linear_mixed_comparisons_microbiome_HEI_species_in_", name, ".xlsx",sep=""))
+  linear_regression_plot_diet(linear.res = res.diet,bmi=F,filter =F, adjusted =T,taxa = "species",out.file  = paste(dir.out, "/Linear_coefficient_microbiome_HEI_filtered_species_disease_adjusted_sex_age_in_", name, ".pdf",sep=""),width =8,height =5)
+  # regression on filtered ASVs (178 ASVs)
+  res.diet = linear_regression_diet(rel.data = rel.data, filter =F, condition =dietseqmeta.disease[[name]],disease= name, taxa ="ASV", out.file = paste(dir.out, "/Linear_mixed_comparisons_microbiome_HEI_filtered_ASV_in_", name, "2.xlsx",sep=""))
+  # add ASVID
+  res.diet$ASVID = asv.taxonomy[match(res.diet$ID, asv.taxonomy$ID),"ASVID"]
+  
+  linear_regression_plot_diet(linear.res = res.diet,filter =T, adjusted =T,taxa = "ASV",out.file  = paste(dir.out, "Linear_coefficient_microbiome_HEI_filtered_ASV_disease_adjusted_sex_age_in_", name, ".pdf",sep = ""),width =11,height =6)
+  #linear_regression_plot_diet(linear.res = res.diet, filter =T, adjusted =F, taxa = "ASV",out.file  = paste(dir.out, "/Linear_coefficient_microbiome_HEI_filtered_ASV_sex_age_in_", name, ".pdf",sep=""),width =11,height =6)
+}
+
+```
+
+### 6.1.1 Correlation species and HEI
+```{r}
+#  build multiple microbiome~dietlinear regression
+heiseq$iMSMS_ID = gsub("-",".",heiseq$iMSMS_ID  )
+hei2015 = merge(heiseq[,c(1, 33:46)], seqmeta, by = "iMSMS_ID")
+rownames(hei2015)= hei2015$iMSMS_ID
+# fruit include total fruits (100% fruit juice) and whole fruit
+hei2015$HEIY_Fruit = hei2015$HEIY3_TOTALFRUIT + hei2015$HEIY4_WHOLEFRUIT
+
+# vegatables include total vegetables and 'green and beans'
+hei2015$HEIY_VEGE = hei2015$HEIY1_TOTALVEG + hei2015$HEIY2_GREEN_AND_BEAN
+hei2015$HEIY_PROT = hei2015$HEIY7_TOTPROT + hei2015$HEIY8_SEAPLANT_PROT
+
+hei2015.disease = split(hei2015, f = hei2015$disease)
+hc.cond =  hei2015.disease[["Control"]]
+ms.cond =  hei2015.disease[["MS"]]
+
+rel.data= taxa.list.ast[[6]]
+all.data= merge(t(rel.data),hei2015, by = "row.names")
+all.data.untreated = all.data[!all.data$treatment_status %in% "Treated",]
+hc.data = merge(t(rel.data),hc.cond, by = "row.names")
+ms.data = merge(t(rel.data), ms.cond, by = "row.names")
+
+# plot  and HEI
+species = "[Eubacterium] eligens"
+species ="Alistipes obesi"
+ggscatter( all.data, y=species,x = "HEI2015_TOTAL_SCORE",color = "disease", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "pearson",xlab = "Healthy eating index (2015)", ylab="Arcsin(relative abundance)",size =1,palette =c("Control"= "#74add1", "MS"= "#a50026"))
+
+```
+
+
+## 6.2 Species ~ HEI components
+```{r}
+# seperate healthy and MS
+hei2015.disease = split(hei2015, f = hei2015$disease)
+hei2015.disease[["UntreatedMS"]] =hei2015[hei2015$iMSMS_ID %in% seqmeta[seqmeta$treatment_status == "Untreated", "iMSMS_ID"],]
+hei2015.disease[["all"]] = hei2015
+#hei2015.disease = split(hei2015, f = hei2015$disease_control)
+
+multiple.diet = c("HEIY_Fruit", "HEIY_VEGE", "HEIY5_WHOLEGRAIN", "HEIY6_TOTALDAIRY", "HEIY_PROT","HEIY9_FATTYACID", "HEIY10_SODIUM","HEIY11_REFINEDGRAIN","HEIY12_ADDSUG" ,"HEIY13_SFA")
+
+# linear regression ASV ~ HEI componets
+for(name in names(hei2015.disease)[4:6]){
+  cond = hei2015.disease[[name]]
+  
+  res.diet = linear_regression_diet(rel.data =taxa.list.rel[[6]], filter =F,arcsin.transform = T, condition =cond, disease= "all", taxa ="species",multiple.diet=multiple.diet,taxonomy = asv.taxonomy, out.file = paste(dir.out, "Linear_mixed_comparisons_microbiome_diet_intakes_species_",name, ".xlsx",sep=""))
+  res.diet.all = res.diet
+  
+  rownames(res.diet) = res.diet$taxonomy
+  colnames(res.diet) =gsub("HEIY[0-9]_|HEIY_|HEIY[0-9][0-9]_|_coef","",colnames(res.diet))
+  for(i in 11:20){
+    res.diet[,i] = p.adjust(res.diet[,i],method = "fdr")
+  }
+  
+  # regression on significant microbes only
+  if(significant){
+    sign.data =read.xls("results/WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_species_UntreadMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sheet =1, head=T)
+    sign.data = sign.data[sign.data$fdr_diseaseMS <= 0.05, ]
+    sign.data =sign.data[order(sign.data$Coef_diseaseMS,decreasing = T),]
+    res.diet2 = res.diet[match(sign.data$taxonomy, res.diet$taxonomy),]
+  }
+  else{
+    res.diet2 = res.diet[apply(res.diet[,11:20],1,function(x){any(x < 0.05)}),]
+  }
+  
+  pvalues_display = res.diet2[,11:20]
+  colnames(pvalues_display) = colnames(res.diet)[1:10]
+  pvalues_display[pvalues_display > 0.05]= NA
+  pvalues_display[pvalues_display < 0.001]= "***"
+  pvalues_display[pvalues_display != "***" & pvalues_display < 0.01]= "**"
+  pvalues_display[pvalues_display != "**" & pvalues_display != "***" & pvalues_display < 0.05]= "*"
+  
+  pvalues_display[is.na(pvalues_display)] = ""
+  
+  # rowclust = hclust(dist(res.diet2[,1:10]))
+  # colclust = hclust(dist(t(res.diet2[,1:10])))
+  # pvalues_display = pvalues_display[rowclust$order,colclust$order]
+  require(pheatmap)
+  colnames(res.diet2)[1:10] = c("Fruit", "Vegetables", "Whole grain", "Total Dairy", "Protein", "Fatty acid", "Sodium", "Refined grain", "Added sugar", "Saturated fats")
+  res.diet2 = res.diet2[,c(3, 5,10,6,9,1,2,4,8,7,11:21)]
+  # set color
+  if(significant){
+    breaksList1 = seq(-0.004, 0,by = 0.0001)
+    breaksList2 = seq(0.00001, 0.005,by = 0.0001)
+    pheatmap(res.diet2[,1:10],display_numbers =pvalues_display,border_color = "white", color = c(colorRampPalette(c("#21409A", "white"))(length(breaksList1)),colorRampPalette(c( "white","firebrick3"))(length(breaksList2))),breaks = c(breaksList1, breaksList2),cluster_rows = F,cluster_cols = F)
+  }else{
+    breaksList1 = seq(min(res.diet2[,1:10]), 0,by = 0.0001)
+    breaksList2 = seq(0.00001, max(res.diet2[,1:10]),by = 0.0001)
+    
+    pheatmap(res.diet2[,1:10],color = c(colorRampPalette(c("#21409A", "white"))(length(breaksList1)),colorRampPalette(c( "white","firebrick3"))(length(breaksList2))),breaks = c(breaksList1, breaksList2),display_numbers =pvalues_display,border_color = "white",cluster_cols = F)
+  }
+  
+  dev.copy2pdf(file = paste(dir.out, "Heatmap_linear_coef_species_HEI_components_", name, ".pdf",sep = ""), width = 7, height =5,useDingbats =F)
+}
+```
+
+### 6.2.1 Correlation ASV and diet
+```{r}
+# correlation between ASV (significant ones) and dietary components
+# merge ASV and diet
+data.log = log10(data)
+hc.data = merge(t(data.log), hc.cond, by = "row.names")
+ms.data = merge(t(data.log), ms.cond, by = "row.names")
+
+g1 = ggscatter(hc.data, y = Akkermansia_muciniphila, x = "HEIY_PROT", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "pearson",ylab = "Relative abundance", color = "black", xlab = "Protein",size =1)
+g2 = ggscatter(ms.data, y = Akkermansia_muciniphila, x = "HEIY_PROT", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "pearson",ylab = "Relative abundance", color = "black", xlab = "Protein",size =1)
+
+ASV4="AACGTAGGTCACAAGCGTTGTCCGGAATTACTGGGTGTAAAGGGAGCGCAGGCGGGAAGACAAGTTGGAAGTGAAATCCATGGGCTCAACCCATGAACTGCTTTCAAAACTGTTTTTCTTGAGTAGTGCAGAGGTAGGCGGAATTCCCGG"
+g1 = ggscatter(hc.data, y =ASV4, x = "HEIY12_ADDSUG", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "pearson",ylab = "Relative abundance", color = "black", xlab = "Added sugar",size =1)
+g2 = ggscatter(ms.data, y = ASV4, x = "HEIY12_ADDSUG", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "pearson",ylab = "Relative abundance", color = "black", xlab = "Added sugar",size =1)
+gridExtra::grid.arrange(g1,g2, nrow =1)
+
+```
+
+
+### 6.2.2 ASV diversity ~ HEI components
+```{r}
+hei.anova = hei2015[,multiple.diet]
+species = read.table("results/QIITA/deblur_otus/Merge_tow_batches/Averaged/diversity/weighted_unifrac_distance_matrix/data/distance-matrix.tsv", head=T,as.is=T,check.names = F)
+
+names = colnames(hei.anova)
+hei.anova$iMSMS_ID  =rownames(hei.anova)
+
+cofounder2 = hei.anova[hei.anova$iMSMS_ID %in% rownames(species),]
+cofounder2$household = seqmeta[match(cofounder2$iMSMS_ID,seqmeta$iMSMS_ID), "household"]
+# keep only paired
+housepair = table(cofounder2$household)
+housepairs= names(housepair[housepair==2])
+cofounder2 = cofounder2[cofounder2$household %in% housepairs,]
+
+# confounders by disease status
+cofounder2 = cofounder2[cofounder2$iMSMS_ID %in% seqmeta[seqmeta$disease =="MS" & seqmeta$treatment_status = "Off", "iMSMS_ID"],]
+
+adonis.res = list()
+for(i in 1:length(names)){
+  dis = species[match(cofounder2$iMSMS_ID, rownames(species)), match(cofounder2$iMSMS_ID, colnames(species))]
+  #adonis.res[[i]] = vegan::adonis(as.formula(paste("dis ~",names[i], sep = "")), data = cofounder2,strata =cofounder2$household )
+  adonis.res[[i]] = vegan::adonis(as.formula(paste("dis ~",names[i], sep = "")), data = cofounder2)
+  
+}
+names(adonis.res) = c(names)
+# extract the R2 and Pvalue
+extra.num = 0 # number of above house site covariate
+
+result = matrix(NA, nrow = length(names)+extra.num, ncol =2)
+for(i in 1:(length(names)+extra.num)){
+  result[i,1] = adonis.res[[i]]$aov.tab$R2[1]
+  result[i,2] = adonis.res[[i]]$aov.tab$`Pr(>F)`[1]
+}
+
+rownames(result) = c(names)
+colnames(result) = c("R2", "Pvalue")
+result = data.frame(result, stringsAsFactors = F)
+result$Padjust = p.adjust(result$Pvalue, method = "fdr")
+
+# write.csv(result, "Adonis_R2.csv", )
+# result=read.csv("Adonis_R2.csv",head=T,as.is=T,row.names = 1)
+result$ID = rownames(result)
+presult = result[result$Pvalue < 0.05,]
+padj.result = result[result$Padjust < 0.05,]
+
+
+ggplot(result, aes(x = reorder(ID, R2),y=R2)) +
+  geom_bar(stat='identity') +
+  coord_flip() + ylab("Adonis R2") + xlab("") +
+  geom_text(data = presult, aes(ID, R2),label="*", col= "black",nudge_y = 0.001, nudge_x = -0.15)+
+  geom_text(data = padj.result, aes(ID, R2),label="*", col= "red",nudge_y = 0.002,nudge_x = -0.15)
+
+ggsave(file = "results/QIITA/deblur_otus/Merge_tow_batches/Averaged/Linear_mixed_model/Diet_microbiome/PERMANOVA_weighted_unifrac_HEI_components_Adonis_R2_barplot_in_MS.pdf", width =6, height = 4, useDingbats =F)
+```
+
+
+##6.3 Diet ~ disease
+### 6.3.1 HEI ~ cofounders
+```{r}
+cofounders =colnames(cofounder.anova)
+cofounders =cofounders[!cofounders %in% c("iMSMS_ID", "household")]
+
+data = list()
+for(name in cofounders){
+  data[[name]] = hei2015[hei2015[,name] !="" ,]
+  if(name %in% c("age", "bmi")){
+    data[[name]][,name] = as.numeric(data[[name]][,name])
+  }else{
+    data[[name]][,name] = factor(data[[name]][,name])
+  }
+}
+
+adonis.res = list()
+for(name in cofounders){
+  adonis.res[[name]] = vegan::adonis(as.formula(paste("HEI2015_TOTAL_SCORE ~", name,sep= "")), data = data[[name]]) 
+}
+names(adonis.res) = cofounders
+# extract the R2 and Pvalue
+result = matrix(NA, nrow = length(cofounders), ncol =2)
+for(i in 1:(length(cofounders))){
+  result[i,1] = adonis.res[[i]]$aov.tab$R2[1]
+  result[i,2] = adonis.res[[i]]$aov.tab$`Pr(>F)`[1]
+}
+rownames(result) = cofounders
+colnames(result) = c("R2", "Pvalue")
+result = data.frame(result, stringsAsFactors = F)
+result$Padjust = p.adjust(result$Pvalue, method = "fdr")
+
+# write.csv(result, "Adonis_R2.csv", )
+# result=read.csv("Adonis_R2.csv",head=T,as.is=T,row.names = 1)
+result$ID = rownames(result)
+for(i in 1:nrow(result)){
+  result$Group[i] = termgroup[termgroup$Term == result$ID[i], "Group"]
+}
+presult = result[result$Pvalue < 0.05,]
+padj.result = result[result$Padjust < 0.05,]
+anova.cols = c("Demography" = "#0571B0", "Life style" ="#92C5DE", "Disease"="#CCCCCC" ,"Medication"="#F4A582", "Physiology"="#CA0020")
+ggplot(result, aes(x = reorder(ID, R2),y=R2, fill = Group)) +
+  geom_bar(stat='identity') +
+  coord_flip() + ylab("Adonis R2") + xlab("") +
+  scale_fill_manual(values = anova.cols) +
+  geom_text(data = presult, aes(ID, R2),label="*", col= "black",nudge_y = 0.005, nudge_x = -0.15)+
+  geom_text(data = padj.result, aes(ID, R2),label="*", col= "red",nudge_y = 0.01,nudge_x = -0.15)
+
+ggsave(file = "results/QIITA/deblur_otus/Merge_tow_batches/Averaged/PERMANOVA_weighted_unifrac_Adonis_R2_barplot.pdf", width =6.5, height =5.5, useDingbats =F)
+
+```
+
+
+```{r}
+# use dietary report
+source("scripts/linear_regression.R")
+source("scripts/linear_regression_plot.R")
+load("../Dietary_questionnaires_round2/rdata/dietpairsum.rda")
+
+# use dietary report
+diet.data = dietpairsum[[10]]
+# use HEI componets
+diet.data = hei2015[,colnames(hei2015) %in% multiple.diet]
+
+res = linear_regression(rel.data = t(diet.data), condition = seqmeta, taxa = "diet", taxonomy = asv.taxonomy, out.file = "results/QIITA/deblur_otus/Merge_tow_batches/Averaged/Linear_mixed_model/Diet/Disease_associated_dietary_HEI2015_componets_linear_age_sex_arcsin_transformed.xlsx", arcsin.transform = T)
+
+linear_regression_plot(res, taxa = "Diet", adjusted =T, out.file = "results/QIITA/deblur_otus/Merge_tow_batches/Averaged/Linear_mixed_model/Linear_coefficient_Genus_disease_adjusted_sex_age_FDR05.pdf", width =8, height =6)
+
+# use HEI index and components
+dietseqmeta2 =t(dietseqmeta[,c(7:58)])
+res = linear_regression(rel.data = dietseqmeta2, condition = seqmeta, taxa = "diet", taxonomy = taxonomy.deblur, out.file = "test.xlxs")
+
+# HEI boxplot
+score = hei2015$HEI2015_TOTAL_SCORE
+names(score) = hei2015$iMSMS_ID
+
+res.paired = paired.adonis(score,distance =F,condition=hei2015, factor = "disease_control", p.adjust.m ='bonferroni',strata ="household")
+res.paired =res.paired[!is.na(res.paired$p.adjusted),]
+
+res.unpaired = paired.adonis(weight,distance =T,condition=condition, factor = "disease_control", p.adjust.m ='bonferroni',strata = NULL)
+res.unpaired = res.unpaired[!res.unpaired$pairs %in% res.paired$pairs,]
+res = rbind(res.paired, res.unpaired)
+res$p.adjusted = p.adjust(res$p.value,method= "fdr")
+
+```
+
+
+## 6.4 Dietary intake pattern (heatmap)
+```{r}
+g = list()
+anova = list()
+jitter =F
+for(diet in multiple.diet){
+  #summary = data_summary(hei2015, varname =diet, groupnames = "disease")
+  #colnames(summary)[2] = "value"
+  if(!jitter){
+    g[[diet]]= ggplot(hei2015, aes_string(x = "disease", y =diet)) + geom_jitter(position=position_jitter(0.15), aes(colour = disease),size =0.6 ) + geom_boxplot(aes(x = disease),outlier.color = NA, width = 0.5,fill =NA) + scale_color_manual(values = disease.cols) + ylab("") +ylim(0,10) + xlab("") +  theme(legend.position="none")+ggtitle(diet)
+    res = aov(hei2015[,diet] ~ hei2015$disease)
+    res = TukeyHSD(res)
+    anova[[diet]] =res
+  }else{
+    g[[diet]]= ggplot(hei2015, aes_string(x = "disease", y =diet,color = "sex")) + geom_jitter(position=position_jitterdodge(0.2),size =0.8, aes(x= disease, colour = sex) ) + geom_boxplot(fill =NA) + ylab("") +ylim(0,10) + xlab("") +  theme(legend.position="none")+ggtitle(diet)
+    res1 = aov(as.formula(paste(diet, "~ sex" ,sep="")), data = hei2015[hei2015$disease == "Control", ])
+    res2 = aov(as.formula(paste(diet, "~ sex" ,sep="")), data = hei2015[hei2015$disease == "MS", ])
+    
+    res1 = TukeyHSD(res1)
+    res2 = TukeyHSD(res2)
+    anova[[diet]] =c(res1, res2)
+  }
+}
+g0 = gridExtra::grid.arrange(grobs=g, nrow =2)
+
+# plot diet heatmap on HEI components or dietary report
+# HEI components
+diet.data = hei2015
+
+#dietary reports
+diet.data = merge(t(dietpairsum[[10]]),seqmeta, by = "row.names")
+rownames(diet.data) = diet.data$Row.names
+annotation = data.frame(BMI = factor(diet.data$bmi_range), disease = factor(diet.data$disease),site = factor(diet.data$site))
+rownames(annotation) = diet.data$iMSMS_ID
+anno_cols = list(disease = disease.cols, site = Site.cols,BMI = bmi.cols)
+
+data = t(diet.data[,colnames(diet.data) %in% multiple.diet])
+data = t(diet.data[,colnames(diet.data) %in% rownames(dietpairsum[[10]])])
+colnames(data) = diet.data$Row.names
+
+pheatmap(data,annotation = annotation, annotation_colors = anno_cols, cluster_cols = T, border_color = NA,show_colnames = F,color = c(colorRampPalette(c("white","#21409A"))(length(seq(0,max(data),by = 0.1)))),breaks =seq(0,max(data),by = 0.1))
+
+dev.copy2pdf(file = "results/QIITA/deblur_otus/Merge_tow_batches/Averaged/Linear_mixed_model/Diet/HEI_components_site_disease_bmi_range_pheatmap.pdf",width =10, height =6, useDingbats =F)
+```
+

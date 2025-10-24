@@ -1,0 +1,1611 @@
+---
+title: "Metabolomic study in iMSMS MS and control samples"
+author: "Xiaoyuan"
+date: "3/4/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Introduction
+```{r}
+require("gdata")
+require("ggplot2")
+theme_set(theme_bw() +
+            #eliminates background, gridlines, and chart border
+            theme(text = element_text(size=15),
+                  plot.title = element_text(size = 12, face = "bold",hjust = 0.5),
+                  axis.line = element_line(colour = "black",size =0.5),
+                  plot.background = element_blank()
+                  ,panel.grid.major = element_blank()
+                  ,panel.grid.minor = element_blank(),
+                  axis.text.x = element_text(colour = "black"),
+                  axis.text.y = element_text(colour = "black"),
+                  panel.border =  element_blank()))
+
+#                  panel.border = element_rect(size =0)))
+require("readxl")
+
+mygsub = function(pattern, replacement,x){
+  if(length(pattern)!=length(replacement)){
+    stop("Pattern and replacement do not have the same length")
+  }
+  result = x
+  for( i in 1:length(pattern)){
+    result= gsub(pattern[i],replacement[i],result)
+  }
+  result
+}
+```
+
+# Settings
+## Set colors for group
+```{r}
+run.cols = c("Baranzini_iMSMS_1-6_S1_L001" ="#FF0000",  "Baranzini_iMSMS_7-12_S1_L001" = "#008000", "Baranzini_iMSMS_13-18_S1_L001"= "#0000FF", "Baranzini_iMSMS_19-24_S1_L001" ="#F27304")
+#disease_course.cols = c(Control = "#74add1",RRMS = "#a50026" , PPMS = "#f6b56e",SPMS = "#f2e8ad", PMS = "#FFBF74",MS ="#a50026" )
+
+disease_course.cols = c(Control = "#74add1",SPMS = "#a50026" , RRMS = "#f6b56e",PPMS = "#5b0a0a")
+pms.cols=  c(Control_RRMS = "#74add1",Control_PMS = "#74add1",PMS = "#a50026" , RRMS = "#f6b56e")
+
+disease_control.cols = c(RRMS_control = "#74add1",RRMS = "#f6b56e",SPMS_control = "#74add1", SPMS = "#a50026" ,PPMS_control = "#74add1", PPMS = "#5b0a0a", PMS = "#FFBF74",MS ="#a50026")
+
+disease_treatment.cols = c(Control = "#74add1",RRMS_Treated = "#a50026" ,RRMS_Off = "#a50026" , PPMS_Treated = "#f6b56e",PPMS_Off = "#f6b56e",SPMS_Treated = "#f2e8ad", SPMS_Off = "#f2e8ad", PMS = "#FFBF74",MS ="#a50026" )
+
+disease_course_pair.cols = c(Control_RRMS =  "#74add1",RRMS= "#a50026",Control_PMS = "#74add1",PMS = "#FFBF74")
+
+disease.cols = c(Control = "#74add1",MS= "#a50026")
+
+Site.cols = c("San Francisco" = "#8c510a", "Boston" = "#bf812d", "New York" = "#dfc27d", "Pittsburgh" = "#c7eae5", "Buenos Aires" = "#80cdc1", "Edinburgh" = "#35978f", "San Sebastian" = "#01665e")
+bmi.cols = c("Underweight" ="#4daf4a","Normal" = "#377eb8","Overweight" = "#984ea3", "Obesity"=  "#e41a1c")
+sex.cols = c("F" ="#df88d9", "M" =  "#20c7e1")
+
+treatment.cols = c(Control ="#74add1", Treated_HHC = "#74add1", Untreated_HHC = "#74add1",Untreated = "#de77ae", Treated = "#7fbc41" )
+
+treatments.cols =c(Control ="#74add1", "Control_Untreated" = "#74add1", "Untreated" ="#de77ae", "Control_Glatiramer acetate" = "#74add1","Control_Fingolimod" ="#74add1","Control_Interferon" = "#74add1","Control_ocrevus(rituxan)" ="#74add1", "Control_Dimethyl fumarate" = "#74add1","Control_Natalizumab" = "#74add1", "Glatiramer acetate" = "#762a83","Fingolimod" ="#af8dc3","Interferon"="#e7d4e8" ,"ocrevus(rituxan)" ="#d9f0d3","Dimethyl fumarate" ="#7fbf7b", "Natalizumab"="#1b7837")
+
+wetdry.cols = c(dry = "#f0af6e", wet = "#622006")
+type.cols = c(Q1 ="#f0af6e",  Q2 = "#f0af6e", S1= "#622006",S2="#622006")
+education.cols = c()
+
+
+treatment.cols = c(Control_RRMS_Off = "#74add1", RRMS_Off = "#67001f", Control_RRMS_Treated  = "#74add1", RRMS_Treated = "#878787")
+color.list = list(disease_course = disease_course.cols,
+                  disease_course_pair = disease_course_pair.cols,
+                  disease = disease.cols,
+                  site = Site.cols,
+                  sex = sex.cols,
+                  treatment_status = treatment.cols,
+                  wet_dry = wetdry.cols,
+                  type = type.cols,
+                  run_prefix = run.cols,
+                  disease_treatment = disease_treatment.cols,
+                  bmi_range = bmi.cols,
+                  disease_control = disease_control.cols,
+                  disease_control_treatment = treatment.cols)
+```
+
+##Set levels for group
+```{r}
+group.levels = list(disease_course = c("Control", "RRMS", "SPMS", "PPMS"), 
+                    disease_course_pair= c("Control1", "RRMS", "Control2", "PMS"), 
+                    site =c("San Francisco","Boston","Mount Sinai","Pittsburgh", "Buenos Aires", "Edinburgh","San Sebastian"),
+                    treatment_status = c("Control", "Off", "Treated"), 
+                    weight=c("underweight", "normal", "overweight", "obesity"), 
+                    disease = c("Control", "MS"),
+                    run_prefix = c("Baranzini_iMSMS_1-6_S1_L001", "Baranzini_iMSMS_7-12_S1_L001", "Baranzini_iMSMS_13-18_S1_L001","Baranzini_iMSMS_19-24_S1_L001"),
+                    disease_control = c("Control_RRMS", "RRMS","Control_SPMS", "SPMS", "Control_PPMS", "PPMS"),
+                    treatments_control = c("Control_Untreated","Untreated", "Control_Dimethyl fumarate" ,"Dimethyl fumarate","Control_Fingolimod","Fingolimod", 
+"Control_Glatiramer acetate","Glatiramer acetate",  "Control_Interferon","Interferon",   "Control_Natalizumab", "Natalizumab","Control_ocrevus(rituxan)","ocrevus(rituxan)"))
+```
+
+
+## Load iMSMS variables
+```{r}
+load("../../../iMSMS_round2_metagenomics/rdata/seqmeta1152.rda")
+load("../../../iMSMS_round2_metagenomics/rdata/seqmeta.comp.rda")
+
+```
+
+# 1. Metabolomics
+```{r}
+# first round of metabolon samples (30 pairs)
+mts1 = read.xls("~/Dropbox/1.project/Metabolomics (Metabolon_2017)/Data table_feces_serum.xlsx", sheet =1 ,head=T,as.is=T,row.names =1,check.names =F )
+
+# second round of metabolon samples (fece and serum, global and targeted)
+stool.file = "data/UCSF-0202-20MDTA+ DATA TABLES_03NOV21.XLSX"
+serum.file = "data/UCSF-0201-20MDTA+ DATA TABLE_serum.XLSX"
+target.file = "data/UCSF-0203-20TASA and UCSF-0204-20TASA CDT_targeted.xlsx"
+
+# read metabolite id table
+mt.id.stool = read.xls(stool.file, sheet =2,head=T,as.is=T)
+mt.id.serum = read.xls(serum.file, sheet =2,head=T,as.is=T)
+
+# read the metadata for metabolomic samples
+mt.meta.stool = read.xls(stool.file, sheet =3,head=T,as.is=T)
+mt.meta.serum = read.xls(serum.file, sheet =3,head=T,as.is=T)
+
+# read the log transformed metabolomic data
+mts.stool = read.xls(stool.file, sheet =7, head=T,as.is=T,check.names =F)
+mts.serum = read.xls(serum.file, sheet =7, head=T,as.is=T,check.names =F)
+
+mts.serum.unlog = read.xls(serum.file, sheet =6,head=T,as.is=T, check.names =F)
+mts.stool.unlog = read.xls(stool.file, sheet =6,head=T,as.is=T, check.names =F)
+
+# check sample overlap with 16S rRNA samples # n=698
+mt.seqmeta = seqmeta[seqmeta$iMSMS_ID %in% gsub("-", ".", mt.meta.stool$CLIENT_SAMPLE_ID),]
+
+rownames(mts.stool) = mt.meta.stool[match(mts.stool$PARENT_SAMPLE_NAME, mt.meta.stool$PARENT_SAMPLE_NAME), "CLIENT_SAMPLE_ID"]
+rownames(mts.stool.unlog) = mt.meta.stool[match(mts.stool.unlog$PARENT_SAMPLE_NAME, mt.meta.stool$PARENT_SAMPLE_NAME), "CLIENT_SAMPLE_ID"]
+
+
+rownames(mts.serum) = mt.meta.serum[match(mts.serum$PARENT_SAMPLE_NAME, mt.meta.serum$PARENT_SAMPLE_NAME), "CLIENT_SAMPLE_ID"]
+
+mts.stool2= t(mts.stool[,-1])
+mts.stool.unlog2= t(mts.stool.unlog[,-1])
+rownames(mts.stool2) = mt.id.stool[match(rownames(mts.stool2), mt.id.stool$CHEM_ID), "CHEMICAL_NAME"]
+colnames(mts.stool2) = gsub("-", ".", colnames(mts.stool2))
+
+mts.serum2= t(mts.serum[,-1])
+rownames(mts.serum2) = mt.id.serum[match(rownames(mts.serum2), mt.id.serum$CHEM_ID), "CHEMICAL_NAME"]
+colnames(mts.serum2) = gsub("-", ".", colnames(mts.serum2))
+
+
+# count metabolites in the same pathway
+mts.stool.unlog2 = t(mts.stool.unlog[,-1])
+mts.stool.unlog2= data.frame(mts.stool.unlog2,stringsAsFactors = F,check.names = F)
+
+mts.stool.unlog2$SUB_PATHWAY= mt.id.stool[match(rownames(mts.stool.unlog2), mt.id.stool$CHEM_ID), "SUB_PATHWAY"]
+
+subpwy =  aggregate(mts.stool.unlog2[,-ncol(mts.stool.unlog2)], by = list(mts.stool.unlog2$SUB_PATHWAY), FUN = sum)
+subpwy$Group.1[1] = "Unknown"
+rownames(subpwy) = subpwy$Group.1
+subpwy= log(subpwy[,-1])
+colnames(subpwy) = gsub("-", ".", colnames(subpwy))
+
+mts.stool.unlog2$SUB_PATHWAY= mt.id.stool[match(rownames(mts.stool.unlog2), mt.id.stool$CHEM_ID), "SUPER_PATHWAY"]
+superpwy =  aggregate(mts.stool.unlog2[,-ncol(mts.stool.unlog2)], by = list(mts.stool.unlog2$SUB_PATHWAY), FUN = sum)
+superpwy$Group.1[1] = "Unknown"
+rownames(superpwy) = superpwy$Group.1
+superpwy= log(superpwy[,-1])
+colnames(superpwy) = gsub("-", ".", colnames(superpwy))
+
+save(subpwy, file = "rdata/subpwy.rda")
+save(superpwy, file = "rdata/superpwy.rda")
+
+# Short chain fatty acids (read simplified file without invalid strings)
+scfa.all = read.csv("data/SCFA.csv",head=T,as.is=T)
+stool.scfa = scfa.all[scfa.all$Client.Matrix =="feces", ]
+serum.scfa = scfa.all[scfa.all$Client.Matrix !="feces", ]
+
+stool.scfa.list=  split(stool.scfa, stool.scfa$Analyte)
+for(name in names(stool.scfa.list)){
+  y = stool.scfa.list[[name]] 
+  colnames(y)[5] = name
+  stool.scfa.list[[name]] =y[,-c(3,4)]
+}
+
+stool.scfas = Reduce(function(x, y) merge(x, y, by=c("Client.Sample.ID","Unique.Tube.Label.ID")), stool.scfa.list)
+rownames(stool.scfas) = stool.scfas$Client.Sample.ID
+stool.scfas = t(stool.scfas[,-c(1:2)])
+colnames(stool.scfas) =gsub("-", ".", colnames(stool.scfas))
+
+stool.scfas.log= log(stool.scfas)
+stool.allscfa = matrix(NA, nrow =1, ncol= 1000)
+stool.allscfa[1,] = colSums(stool.scfas)
+colnames(stool.allscfa) = colnames(stool.scfas)
+rownames(stool.allscfa) = "SCFA"
+stool.allscfa=data.frame(stool.allscfa, stringsAsFactors = F,check.names = F)
+stool.allscfa.log = log(stool.allscfa)
+
+
+serum.scfa.list=  split(serum.scfa, serum.scfa$Analyte)
+for(name in names(serum.scfa.list)){
+  y = serum.scfa.list[[name]] 
+  colnames(y)[5] = name
+  serum.scfa.list[[name]] =y[,-c(3,4)]
+}
+
+serum.scfas = Reduce(function(x, y) merge(x, y, by=c("Client.Sample.ID","Unique.Tube.Label.ID")), serum.scfa.list)
+rownames(serum.scfas) = serum.scfas$Client.Sample.ID
+serum.scfas = t(serum.scfas[,-c(1:2)])
+colnames(serum.scfas) =gsub("-", ".", colnames(serum.scfas))
+
+
+serum.scfas.log = t(log(serum.scfas[,-c(1:2)]))
+colnames(serum.scfas.log) =gsub("-", ".", colnames(serum.scfas.log))
+
+
+
+```
+
+
+## 1.1 summary nsaids, probiotics, otc, rxmeds usasge
+```{r}
+test = seqmeta[seqmeta$disease == "MS" & seqmeta$nsaids ==0 & seqmeta$probiotics == 0 & seqmeta$otc_meds == "No" & seqmeta$rxmeds  == 2, ]
+test.sm = table(test[,c("pms", "treatments")])
+
+test2 = mt.seqmeta[mt.seqmeta$disease == "MS" & mt.seqmeta$nsaids ==0 & mt.seqmeta$probiotics == 0 & mt.seqmeta$otc_meds == "No" & mt.seqmeta$rxmeds  == 2, ]
+test.sm2 = table(test2[,c("pms", "treatments")])
+
+
+variables = c("nsaids", "probiotics", "otc_meds", "rxmeds")
+var.data = lapply(variables, function(x){
+  y =  table(seqmeta[,c(x,"pms")])
+  y = data.frame(y)
+  colnames(y)[1] = x
+  y$pct = y$Freq/sum(y$Freq)*100
+  # nsaids.tab$ymax = cumsum(nsaids.tab$pct)
+  # nsaids.tab$ymin = c(0, head(nsaids.tab$ymax, n=-1))
+  y$pms= factor(y$pms, levels = c("Control_RRMS","RRMS","Control_PMS", "PMS" ))
+  y
+})
+require(ggnewscale)
+
+
+
+g1= ggplot(var.data[[1]]) + geom_rect(aes(ymin = cumsum(pct) - pct, ymax = cumsum(pct), xmin = 0 , xmax = 1, fill = nsaids))+ new_scale_fill() +  geom_rect(aes(ymin = cumsum(pct) - pct, ymax = cumsum(pct), xmin = 1.25, xmax = 1.5, fill =pms)) + scale_fill_manual(values= pms.cols)+ coord_polar(theta = "y") + theme_void()
+
+g2= ggplot(var.data[[2]]) + geom_rect(aes(ymin = cumsum(pct) - pct, ymax = cumsum(pct), xmin = 0 , xmax = 1, fill = probiotics))+ new_scale_fill() +  geom_rect(aes(ymin = cumsum(pct) - pct, ymax = cumsum(pct), xmin = 1.25, xmax = 1.5, fill =pms)) + scale_fill_manual(values= pms.cols)+ coord_polar(theta = "y") + theme_void()
+
+g3= ggplot(var.data[[3]]) + geom_rect(aes(ymin = cumsum(pct) - pct, ymax = cumsum(pct), xmin = 0 , xmax = 1, fill = otc_meds))+ new_scale_fill() +  geom_rect(aes(ymin = cumsum(pct) - pct, ymax = cumsum(pct), xmin = 1.25, xmax = 1.5, fill =pms)) + scale_fill_manual(values= pms.cols)+ coord_polar(theta = "y") + theme_void()
+
+g4= ggplot(var.data[[4]]) + geom_rect(aes(ymin = cumsum(pct) - pct, ymax = cumsum(pct), xmin = 0 , xmax = 1, fill = rxmeds))+ new_scale_fill() +  geom_rect(aes(ymin = cumsum(pct) - pct, ymax = cumsum(pct), xmin = 1.25, xmax = 1.5, fill =pms)) + scale_fill_manual(values= pms.cols)+ coord_polar(theta = "y") + theme_void()
+
+grid.arrange(g1,g2,g3,g4, nrow =2)
+
+# g + geom_label(aes(label = pct, x= 0.5,y =(ymin+ymax)/2), position = position_stack(vjust = 0.5)) 
+```
+
+
+## 1.2 Linear regression (taken from species linear regression function)
+```{r}
+#read functions
+source("../../../iMSMS_round2/scripts/linear_regression.R")
+source("../../../iMSMS_round2/scripts/linear_regression_plot.R")
+
+mtseqmeta.comp = lapply(seqmeta.comp, function(x){
+  x = x[x$iMSMS_ID %in% mt.seqmeta$iMSMS_ID,]
+  x
+})
+
+id.table = mt.id.stool
+colnames(id.table) =gsub("CHEMICAL_NAME","taxonomy", colnames(id.table))
+id.table.serum = mt.id.serum
+colnames(id.table.serum) =gsub("CHEMICAL_NAME","taxonomy", colnames(id.table.serum))
+
+require(reshape)
+require(ggplot2)
+
+# remove natalizumab comparisons
+# names.rm = names(seqmeta.comp)[59:83]
+# names.rm = names.rm[!grepl("Natalizumab",names.rm )]
+
+  for(name in names(mtseqmeta.comp)[1:58]){
+    feature = "SCFA"
+  if(name %in% group1){
+      dir.out =  "Linear_regression_stool/MS"
+    if(grepl("HHC", name)){
+      fixed.var1 = "disease"
+    levels = c("Control", "MS")
+    house.adjust  =T
+    }else{
+    fixed.var1 = "treatment_status"
+    levels = c("Untreated", "Treated")
+    house.adjust  =F
+    }
+  }else if (name %in% group2){
+    dir.out =  "Linear_regression_stool/disease_course"
+    if(grepl("HHC", name)){
+          fixed.var1 = "disease"
+    levels =c("Control","MS")
+     house.adjust =T
+    }else if(grepl("RRMS",name) & grepl("PMS",name)){
+      fixed.var1 = "pms"
+    levels =c("RRMS","PMS")
+     house.adjust =F
+    }else{
+            fixed.var1 = "treatment_status"
+    levels =c("Untreated","Treated")
+     house.adjust =F
+    }
+  }else if (name %in% c(group3,group5)){
+    if(name %in% group3){
+      dir.out =  "Linear_regression_stool/treatment_allsamples"
+    }else if(name %in% group5){
+      dir.out =  "Linear_regression_stool/treatment_RRMSonly"
+    }
+    if(grepl("HHC",name)){
+       fixed.var1 = "treatments"
+    levels = c("Control", unlist(strsplit(name, "_"))[1])
+     house.adjust =T
+    }else{
+      fixed.var1 = "treatments"
+    levels = unlist(strsplit(name, "_"))
+    levels = levels[!levels %in% c("RRMS", "PMS")]
+    levels= rev(levels)
+    if("untreated" %in% levels){
+      levels = gsub("untreated", "Untreated", levels)
+    }
+     house.adjust =F
+    }
+  }else if(name %in% c(group4, group6)){
+     if(name %in% group4){
+      dir.out =  "Linear_regression_stool/administration_allsamples"
+    }else{
+      dir.out =  "Linear_regression_stool/administration_RRMSonly"
+    }
+    fixed.var1 = "administration"
+    if(grepl("HHC", name)){
+     levels = c("Control",unlist(strsplit(name, "_"))[1]) 
+     house.adjust =T
+    }else {
+    levels = unlist(strsplit(name, "_"))
+    levels = levels[levels!="RRMS"]
+    levels= rev(levels)
+    if("untreated" %in% levels){
+      levels = gsub("untreated", "Untreated", levels)
+    }
+      house.adjust =F
+    }
+  }
+  if(!dir.exists(dir.out)){
+    dir.create(dir.out)
+  }
+  metares = linear_regression(rel.data = stool.scfas,arcsin.transform =F, filter =F, fixed.var = c(fixed.var1,"sex", "age", "bmi"),levels =levels,house.adjust =house.adjust, site =T, condition =mtseqmeta.comp[[name]], taxa =feature, out.file = paste(paste(dir.out, "/Linear_coefficient", sep=""), feature, name, "_sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+  # metares= merge(metares, id.table, by = "taxonomy")
+  #WriteXLS(metares, paste(paste(dir.out, "/Linear_coefficient", sep=""), feature, name, "_sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+  
+  strs = unlist(strsplit(colnames(metares)[1], "_"))
+  if(length(strs) ==2){
+    index = strs[2]
+  }else{
+    index = paste(strs[2:length(strs)], collapse ="_")
+  }
+  
+  colnames(metares) = gsub(index, "diseaseMS",colnames(metares) )
+
+      sign1 = metares[metares$fdr_diseaseMS <= 0.05, ]
+        padjust1 =TRUE
+        if(nrow(sign1) > 30){
+          sign1 = sign1[sign1[,1] <= quantile(metares[,1],seq(0,1,0.05))["5%"] | sign1[,1] >= quantile(metares[,1],seq(0,1,0.05))["95%"], ]
+           prefix1 = "fdr_coef_quantile5"
+        }else{
+          prefix1 = "fdr"
+        }
+        
+        if(nrow(sign1) <= 5){
+        height1 = (nrow(sign1) +1)*0.6
+        width1 =10
+      }else if(nrow(sign1) <=15) {
+        height1 = nrow(sign1)*0.4
+        width1 = 11
+      }else{
+        height1 = nrow(sign1)*0.2
+        width1= 11
+      }
+        
+        sign2 = metares[metares$Pr_diseaseMS <= 0.05, ]
+       # sign2 = sign2[sign2[,1] <= quantile(metares[,1],seq(0,1,0.05))["5%"] | sign2[,1] >= quantile(metares[,1],seq(0,1,0.05))["95%"], ]
+        padjust2 =FALSE
+       # prefix2 = "P0.05_coef_quantile5"
+         prefix2 = "P0.05"
+         if(nrow(sign2) <= 5){
+        height2 = (nrow(sign2) +1)*0.6
+        width2 =10
+      }else if(nrow(sign2) <=15) {
+        height2 = nrow(sign2)*0.4
+        width2 = 11
+      }else{
+        height2 = nrow(sign2)*0.2
+        width2= 11
+      }
+        sign3 = metares[metares$fdr_diseaseMS <= 0.1, ]
+        padjust3 =TRUE
+        if(nrow(sign3) > 30){
+          sign3 = sign3[sign3[,1] <= quantile(metares[,1],seq(0,1,0.05))["5%"] | sign1[,1] >= quantile(metares[,1],seq(0,1,0.05))["95%"], ]
+           prefix3 = "fdr0.1_coef_quantile5"
+        }else{
+          prefix3 = "fdr0.1"
+        }
+        
+        if(nrow(sign3) <= 5){
+        height3 = (nrow(sign3) +1)*0.6
+        width3 =10
+      }else if(nrow(sign3) <=15) {
+        height3 = nrow(sign3)*0.4
+        width3 = 11
+      }else{
+        height3 = nrow(sign3)*0.2
+        width3= 11
+      }
+        sign.list = list(sign1,sign2, sign3)
+        prefixs= c(prefix1, prefix2, prefix3)
+        widths =c(width1, width2, width3)
+        heights= c(height1,height2, height3)
+        padjusts = c(padjust1, padjust2, padjust3)
+        
+        for(i in 1:length(sign.list)){
+          if(nrow(sign.list[[i]]) > 0){
+             linear_regression_plot(sign.list[[i]], taxa =feature, disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file =paste(paste(dir.out, "/Linear_coefficient",sep=""), feature,name,prefixs[i], "_random_effect.pdf",sep="_"),width =widths[i],height =heights[i],taxaname = F, padjust = padjusts[i])
+          }
+        }
+}
+# link Chemical names to other IDs
+files  = list.files(path = "Linear_regression_serum/treatment_allsamples/",pattern =  "xlsx",full.names = T)
+
+for(i in 1:length(files)){
+ x = read.xls(files[i],sheet =1, head=T,as.is=T,check.names=F)
+ y = merge(x,id.table.serum, by = "taxonomy" )
+ WriteXLS(y, files[i])
+}
+```
+
+### 1.2.1 VennDiagram to compare differential features
+```{r}
+# venn diagram showing the overlap of differential metabolites
+mt.files = list("Untreated" ="Linear_regression_stool//disease_course//Linear_coefficient_metabolite_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx", "Dimethyl fumarate" = "Linear_regression_stool//treatment_RRMSonly/Linear_coefficient_metabolite_Dimethyl fumarate_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx", "Fingolimod" = "Linear_regression_stool//treatment_RRMSonly/Linear_coefficient_metabolite_Fingolimod_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx", "Glatiramer acetate" = "Linear_regression_stool//treatment_RRMSonly/Linear_coefficient_metabolite_Glatiramer acetate_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx", "Interferon" = "Linear_regression_stool//treatment_RRMSonly/Linear_coefficient_metabolite_Interferon_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx")
+
+# link the metabolites to compound IDs
+mt.id2 = mt.id.stool
+colnames(mt.id2) = gsub("CHEMICAL_NAME", "taxonomy", colnames(mt.id2))
+mts.linear = lapply(mt.files, function(x){
+ y = read.xls(x, head=T,as.is=T,sheet =1) 
+ y= merge(y, mt.id2, by = "taxonomy")
+ WriteXLS(y, x)
+}
+)
+
+# get significantly differential metabolites
+# function to get differential (up/down) metabolites 
+diff.mts.func= function(file, pmethod = c("p", "fdr"), pvalue = 0.05, coef =FALSE){
+  x = read.xls(file,sheet =1,head=T,as.is=T)
+  if(pmethod == "p" ){
+    if(coef){
+     lowcoef=  quantile(x[,2],seq(0,1,0.05))["5%"]
+     highcoef= quantile(x[,2],seq(0,1,0.05))["95%"]
+      y = x[x[,2] < lowcoef | x[,2] >  highcoef,]
+     y = y[y[,6] < pvalue ,] 
+    }else{
+    y = x[x[,6] < pvalue,]  
+    }
+  } 
+  if(pmethod =="fdr"){
+     y = x[x[,18] < pvalue,]
+  }
+   up.regulated = y[y[,2] > 0,]
+    down.regulated = y[y[,2] < 0,]
+list(up = up.regulated, down= down.regulated)
+}
+
+sign.mts = lapply(files, function(x){
+ y = diff.mts.func(x, pmethod = "p", pvalue = 0.05, coef = T)
+ y
+})
+
+
+sign.mts = lapply(mt.files, function(x) {
+  y = read.xls(x, head=T,as.is=T,sheet =1)
+  y
+  })
+
+fdr.mts = lapply(sign.mts, function(x){
+ z = x[x[,18] < 0.05,"taxonomy"]
+ z
+}
+)
+# remove GA with no differential metabolite
+fdr.mts = fdr.mts[-4]
+
+# up regulated metabolite in MS
+fdr.mts.up = lapply(sign.mts, function(x){
+ z = x[x[,18] < 0.1 & x[,2] >0,"taxonomy"]
+ z
+}
+)
+fdr.mts.up= fdr.mts.up[-c(1,4)]
+
+fdr.mts.down = lapply(sign.mts, function(x){
+ z = x[x[,18] < 0.1 & x[,2] < 0,"taxonomy"]
+ z
+}
+)
+fdr.mts.down = fdr.mts.down[-4]
+
+tmp = venn.diagram(fdr.mts,filename = NULL, fill = treatments.cols[names(fdr.mts)],alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+pdf(file=  "results/metabolon/Differential_metabolics_treatment_untreated_vennDiagram_fdr0.05.pdf")
+grid.draw(tmp)
+dev.off()
+
+
+tmp = venn.diagram(fdr.mts.up, filename = NULL, fill = treatments.cols[names(fdr.mts.up)],alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+pdf(file ="results/metabolon/Differential_metabolics_treatment_untreated_vennDiagram_MS_increased_fdr0.1.pdf")
+grid.draw(tmp)
+dev.off()
+
+tmp = venn.diagram(fdr.mts.down,filename = NULL, fill = treatments.cols[names(fdr.mts.down)],alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+pdf(file =  "results/metabolon/Linear_regression/VennDiagram/Differential_metabolics_treatment_untreated_vennDiagram_MS_decreased_fdr0.1.pdf")
+grid.draw(tmp)
+dev.off()
+
+p.mts = lapply(sign.mts, function(x){
+ y = x[x[,6] < 0.05,"taxonomy"]
+ y
+}
+)
+
+
+p.mts.up = lapply(sign.mts, function(x){
+ y = x[x[,6] < 0.05 & x[,2] > 0,"taxonomy"]
+ y
+}
+)
+
+p.mts.down = lapply(sign.mts, function(x){
+ y = x[x[,6] < 0.05 & x[,2] < 0,"taxonomy"]
+ y
+}
+)
+
+tmp = venn.diagram(p.mts,filename = NULL, fill = treatments.cols[names(p.mts)],alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+pdf(file = "results/metabolon/Differential_metabolics_treatment_untreated_vennDiagram_p0.05.pdf")
+grid.draw(tmp)
+dev.off()
+
+tmp = venn.diagram(p.mts.up,filename =NULL , fill = treatments.cols[names(p.mts.up)],alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+pdf(file = "results/metabolon/Differential_metabolics_treatment_untreated_vennDiagram_MS_increase_p0.05.pdf")
+grid.draw(tmp)
+dev.off()
+
+
+tmp = venn.diagram(p.mts.down,filename = NULL, fill = treatments.cols[names(p.mts.down)],alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+pdf(file =  "results/metabolon/Differential_metabolics_treatment_untreated_vennDiagram_MS_decrease_p0.05.pdf")
+grid.draw(tmp)
+dev.off()
+
+# compared upregulated mts in untreated RRMS and downregulated metabolites in treatedRRMS
+p.mts.updown1 = p.mts.up
+p.mts.updown1[1] = p.mts.down[1]
+
+p.mts.updown2 = p.mts.down
+p.mts.updown2[1] = p.mts.up[1]
+
+tmp = venn.diagram(p.mts.updown1,filename = NULL, fill = treatments.cols[names(p.mts.updown1)],alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+pdf(file =  "results/metabolon/Linear_regression_stool/VennDiagram/Differential_metabolics_untreated_decreased_treated_increased_vennDiagram_MS_p0.05.pdf")
+grid.draw(tmp)
+dev.off()
+
+tmp = venn.diagram(p.mts.updown2,filename = NULL, fill = treatments.cols[names(p.mts.updown2)],alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+pdf(file =  "results/metabolon/Linear_regression_stool/VennDiagram/Differential_metabolics_untreated_increased_treated_decreased_vennDiagram_MS_p0.05.pdf")
+grid.draw(tmp)
+dev.off()
+
+```
+
+### 1.2.2 Heatmap of differential features
+```{r}
+index = "metabolite"
+index = "subpathway"
+index = "SCFA"
+
+df.files = c("Untreated" =paste("Linear_regression_stool//disease_course//Linear_coefficient_", index, "_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "Dimethyl fumarate" = paste("Linear_regression_stool//treatment_RRMSonly/Linear_coefficient_", index, "_Dimethyl fumarate_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "Fingolimod" = paste("Linear_regression_stool//treatment_RRMSonly/Linear_coefficient_",index, "_Fingolimod_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "Glatiramer acetate" = paste("Linear_regression_stool//treatment_RRMSonly/Linear_coefficient_", index, "_Glatiramer acetate_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "Interferon" =paste( "Linear_regression_stool//treatment_RRMSonly/Linear_coefficient_", index, "_Interferon_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""))
+
+# untreated MS, RRMS and PMS
+df.files = c("MS" =paste("Linear_regression_stool//MS/Linear_coefficient_", index, "_UntreadMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "RRMS" = paste("Linear_regression_stool//disease_course/Linear_coefficient_", index, "_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "PMS" = paste("Linear_regression_stool//disease_course/Linear_coefficient_", index, "_UntreatedPMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""))
+
+
+pwy.all.stool = lapply(df.files, function(x) read.xls(x, head=T,as.is=T,sheet =1))
+if(index == "metabolite"){
+  pwy.all.stool = lapply(pwy.all.stool,function(x){
+    y = x[,c(2:ncol(x),1)]
+    y
+  } )
+}
+source("../../scripts/CoefHeatmap.R")
+dir.out= "Linear_regression_stool/disease_course_heatmap/"
+if(!file.exists(dir.out)){
+  dir.create(dir.out)
+}
+# fdr
+CoefHeatmap(diff.species = pwy.all.stool, p.value =1, fdr = NULL,colnames=names(df.files),out.file =paste(dir.out, paste("UntreatedMS_RRMS_PMS_HHC_heatmap_p0.05_labeled",index,".pdf",sep=""),sep=""), width =6, height =5,angle_col = 45,breaks =TRUE)
+
+
+```
+
+##1.3 Read differential features
+```{r}
+# read differential metabolites
+files =  list.files(path = "Linear_regression_stool/MS/", pattern = "*metabolite.*random.xlsx",full.names = T)
+#files = files[-1]
+
+diff.mts = lapply(files, function(x){
+ y = diff.mts.func(x, pmethod = "p", pvalue = 0.05, coef = T)
+ y
+})
+```
+
+## 1.4 Metabolomic enrichment
+```{r}
+# enrichment function
+enrich.func = function(all, sign, pathway.term = c("SUPER_PATHWAY", "SUB_PATHWAY")){
+  all[all[,pathway.term] =="", pathway.term] = "Unknown"
+  sign[sign[,pathway.term] =="", pathway.term] = "Unknown"
+  
+  # all count
+  allcount = all[,c("CHEMICAL_NAME",pathway.term)]
+    #signcount = sign[,c("taxonomy",pathway.term)]
+  signcount = sign[,c("CHEMICAL_NAME",pathway.term)]
+
+  allcount = table(allcount[,pathway.term])
+  allcount.table = data.frame(allcount,stringsAsFactors = F)
+
+  # sign count
+   signcount = table(signcount[,pathway.term])
+  signcount.table = data.frame(signcount,stringsAsFactors = F)
+  
+  colnames(signcount.table)[2] = "signcount"
+  colnames(allcount.table)[2] = "allcount"
+  count = merge(signcount.table, allcount.table,by = "Var1")
+  count$allgene = nrow(all)
+  count$diffgene = nrow(sign)
+  for(i in 1:nrow(count)){
+    count$Pvalue[i] = phyper(count[i,2]-1, count[i,3], count[i,4]-count[i,3], count[i,5], lower.tail = T)
+  }
+  count$fdr = p.adjust(count$Pvalue, method= "fdr")
+  count
+}
+
+
+for(i in 1:length(diff.mts)){
+  if(nrow(diff.mts[[i]][[1]]) > 0){
+    enrich.up.super = enrich.func(sign= diff.mts[[i]][[1]],all = mt.id, pathway.term = "SUPER_PATHWAY")
+      enrich.up.sub = enrich.func(sign= diff.mts[[i]][[1]],all = mt.id, pathway.term = "SUB_PATHWAY")
+  }else{
+    enrich.up.super = enrich.up.sub  =NULL
+  }
+   if(nrow(diff.mts[[i]][[2]]) > 0){
+  enrich.down.super = enrich.func(sign= diff.mts[[i]][[2]],all = mt.id, pathway.term = "SUPER_PATHWAY")
+  enrich.down.sub = enrich.func(sign= diff.mts[[i]][[2]],all = mt.id, pathway.term = "SUB_PATHWAY")
+   }else{
+      enrich.down.super = enrich.down.sub  =NULL
+   }
+  enrich.res = list(increase_metab_super_pathway = enrich.up.super,
+                    decrease_metab_super_pathway = enrich.down.super,
+                    increase_metab_sub_pathway = enrich.up.sub,
+                    decrease_metab_sub_pathway = enrich.down.sub)
+  enrich.res = enrich.res[!sapply(enrich.res, is.null)]
+  if(length(enrich.res) >0){
+    WriteXLS(enrich.res,gsub(".xlsx","_fdr0.1_pathway_enrichment.xlsx", files[i]))
+  }
+  
+}
+
+```
+
+## 1.5 Map to MetaCyc pathways via Metacyc compounds and humann2 proteins from metagenomic sequencing
+### 1.5.1 Convert metabolon KEGG ids to metacyc compound
+```{r}
+all.kegg = unlist(sapply(unique(mt.id.stool$KEGG),strsplit,split=","))
+kegg.list = split(all.kegg, ceiling(seq_along(all.kegg)/50))
+
+kegg2metacyc = lapply(kegg.list,function(x){
+  x= gsub("\n","",x)
+  y = paste("Kegg:", x,sep="")
+  y= paste(y, collapse = ",")
+  res = readLines(paste("https://websvc.biocyc.org/META/foreignid?ids=",y,sep=""))
+  res
+}
+)
+
+kg2cyc= data.frame(kegg = unlist(kegg2metacyc),stringsAsFactors = F)
+require(tidyr)
+kg2cyc.tab = kg2cyc %>% separate(kegg, c("KEGG","Status","MetaCyc"), "\t")
+kg2cyc.tab$KEGG = gsub("Kegg:", "", kg2cyc.tab$KEGG )
+write.csv(kg2cyc.tab, "data/Compound_kegg2metacyc.csv")
+
+
+mt.id.stool$KEGG = gsub("\n","", mt.id.stool$KEGG)
+mt.id.stool2 = mt.id.stool %>% separate_rows(KEGG,sep= ",")
+
+mt.id.stool2$MetaCyc =kg2cyc.tab[match(mt.id.stool2$KEGG, kg2cyc.tab$KEGG), "MetaCyc"]
+write.csv(mt.id.stool2, "data/Metabolon_stool_metabolites_kegg_multiplerows.csv",row.names = F)
+```
+
+### 1.5.2 Metacyc Pathway and humann2 species-protein
+```{r}
+############ Tried but not unused ##############
+spoke.edge = read.csv("~/Dropbox/1.project/SPOKE/spoke_dev/spoke_edge_data_Mar_09_2022.csv",head=T,as.is=T)
+# split table by edge types
+spoke.subsets = split(spoke.edge, f = spoke.edge$edge_type)
+# if compounds are in CHEMBL and DrugBank, their ids will be used, otherwise, kegg IDs will be used.
+# link CHEMBL and DrugBank IDs to kegg IDs (metabolites)
+
+# kegg reaction to compound
+# downloaded from http://rest.kegg.jp/link/compound/reaction
+# rxn2cpd = read.csv("~/Dropbox/1.project/SPOKE/KEGG/kegg_rn2compound.txt",head=F,as.is=T,sep="\t")
+# 
+# rxn2cpd$V1 = gsub("rn:", "", rxn2cpd$V1 )
+# rxn2cpd$V2 = gsub("cpd:", "", rxn2cpd$V2 )
+# colnames(rxn2cpd) = c("rxn", "KEGG")
+###################
+# Download metacyc smartable "Reactions of pathway from Pathways from All instances of Pathways in MetaCyc" by adding columns of pathways, reaction, EC, substrates(products, Reactants, genes, ontology)
+metacyc =read.csv("~/Dropbox/1.project/SPOKE/metacyc/20220308Reactions-of-pathway-from-Pathways-from-All-instances-of-Pathways-in-MetaCyc.txt",head=T,as.is=T,sep = "\t")
+metacyc = metacyc[,!colnames(metacyc) %in% "Pathways.of.a.reaction"]
+metacyc = metacyc %>% separate_rows(Substrates..reactants.and.products..of.a.reaction,sep= " // ")
+metacyc = metacyc %>% separate_rows(Matches,sep=" // ")
+metacyc$EC.Number = gsub("EC-", "", metacyc$EC.Number)
+#metacyc$kegg.compound = kg2cyc.tab[match(metacyc$Substrates..reactants.and.products..of.a.reaction, kg2cyc.tab$MetaCyc), "KEGG"]
+# link differential metabolites to metacyc pathways
+# differential metabolites
+
+humann2.uniprot =read.csv("~/Dropbox/1.project/iMSMS_round2_metagenomics/results/WOL_shogun/humann2/genes/Humann2_species_gene_map_filtered/Humann2_genefamilies_filtered_convert_uniprot.txt.txt",head=T,as.is=T,sep="\t")
+humann2.uniprot$edge_type = "HAS_PhEC"
+```
+
+### 1.5.3 Map differential metabolites to Metacyc pathways
+```{r}
+# from 1.3
+diff.list = diff.mts 
+
+for(i in 1:length(diff.list)){
+  x = diff.list[[i]]
+  if(nrow(x[[1]]) > 0){
+    kg1 = unlist(strsplit(x[[1]]$KEGG, ","))
+    kg1 = gsub("\n", "", kg1)
+    mc1 = kg2cyc.tab[kg2cyc.tab$KEGG %in% kg1, "MetaCyc"]
+    y1 = metacyc[metacyc$Substrates..reactants.and.products..of.a.reaction %in% mc1, ]
+  }else{y1 = NULL}
+  if(nrow(x[[2]]) > 0){
+    kg2 = unlist(strsplit(x[[2]]$KEGG, ","))
+    kg2= gsub("\n", "", kg2)
+    mc2 = kg2cyc.tab[kg2cyc.tab$KEGG %in% kg2, "MetaCyc"]
+    y2 = metacyc[metacyc$Substrates..reactants.and.products..of.a.reaction %in% mc2, ]
+  }else{y2 =NULL}
+  y = list(spoke_path_up = y1, spoke_path_down = y2)
+  y= y[!sapply(y, is.null)]
+  y= y[sapply(y, nrow) > 0]
+  
+  if(length(y) > 0){
+    y =lapply(y, function(z){
+      # get EC., protein, bacteria for reactions
+      ecs = z$EC.Number
+      ecs = ecs[ecs != ""]
+     
+      prot = humann2.uniprot[humann2.uniprot$EC.number %in% ecs,c("Entry", "Entry.name", "edge_type","EC.number", "Protein.names", "Organism", "Organism.ID")]
+      #prot = spoke.subsets$HAS_PhEC[spoke.subsets$HAS_PhEC$target %in% ec$ec, ]
+  colnames(prot)= c("protein","protein_name", "protein_edge_type_ec","EC.Number", "ec_name", "Organism", "Organism.ID")
+  ecprot = merge(z, prot, by = c("EC.Number"))
+ecprot 
+    })
+if(nrow(y[[1]]) > 0){
+  colnames(y[[1]]) =gsub("Substrates..reactants.and.products..of.a.reaction", "MetaCyc",colnames(y[[1]]))
+     y[[1]] = merge(y[[1]], mt.id.stool2, by = "MetaCyc") 
+}else{
+  y[[1]] =NULL
+}
+ if(length(y) == 2){
+  colnames(y[[2]]) =gsub("Substrates..reactants.and.products..of.a.reaction", "MetaCyc",colnames(y[[2]]))
+     y[[2]] = merge(y[[2]], mt.id.stool2, by = "MetaCyc") 
+ }
+     y= y[!sapply(y, is.null)]
+      y= y[sapply(y, nrow) > 0]
+     if(length(y) > 0){
+        WriteXLS(y, gsub(".xlsx","_p0.05_MetaCyc_humann2_metagenomic_pathway.xlsx", files[i]))
+     }
+  }
+}
+```
+
+### 1.5.4 Diff subpathways
+```{r}
+# differential subpathways
+diff.pwy = lapply(pwy.all, function(x){
+  pwys = x[x[,17] < 0.05, "taxonomy"]
+  keggs = mt.id.stool[mt.id.stool$SUB_PATHWAY %in% pwys,]
+  #keggs = unlist(sapply(keggs[keggs !=""],strsplit, split= ","))
+  keggs
+})
+
+for(i in 1:length(diff.pwy)){
+  x = diff.pwy[[i]]
+  if(nrow(x) > 0){
+    keggs= unlist(sapply(x[x !=""],strsplit, split= ","))
+    y = rxn2cpd[rxn2cpd$KEGG %in% keggs,]
+  }else{y = NULL}
+  
+  if(nrow(y) > 0){
+      # get EC., protein, bacteria for reactions
+      ec= spoke.subsets$CATALYZES_ECcR[spoke.subsets$CATALYZES_ECcR$target %in% unique(y$rxn),]
+      colnames(ec)=c("ec","ec_name", "ec_edge_type_cmp", "rxn", "rxn_name")
+      
+      prot = spoke.subsets$HAS_PhEC[spoke.subsets$HAS_PhEC$target %in% ec$ec, ]
+  colnames(prot)= c("protein","protein_name", "protein_edge_type_ec","ec", "ec_name")
+  ecprot = merge(ec, prot, by = c("ec","ec_name"))
+      bac = spoke.subsets$ENCODES_OeP[spoke.subsets$ENCODES_OeP$target %in% prot$protein, ]
+      colnames(bac) = c("taxaid", "taxa", "taxa_edge_type_protein", "protein","protein_name")
+      ecprotbac = merge(ecprot, bac, by =c("protein", "protein_name"))
+      pwy = spoke.subsets$HAS_PWhR[ spoke.subsets$HAS_PWhR$target %in% unique(y$rxn),]
+ colnames(pwy) =c("pwy", "pwy_name", "pwy_edge_type_rxn", "rxn", "rxn_name")
+ ecprotbacpwy = merge(ecprotbac, pwy, by = c("rxn", "rxn_name"))
+ ecprotbacpwy
+    }
+if(nrow(y[[1]]) > 0){
+   y[[1]] = merge(y1, y[[1]], by ="rxn")
+     y[[1]] = merge(y[[1]], mt.id, by = "KEGG") 
+}else{
+  y[[1]] =NULL
+}
+ if(length(y) == 2){
+     y[[2]] = merge(y2, y[[2]], by ="rxn")
+     y[[2]] = merge(y[[2]], mt.id, by = "KEGG")
+ }
+     y= y[!sapply(y, is.null)]
+      y= y[sapply(y, nrow) > 0]
+     if(length(y) > 0){
+        WriteXLS(y, gsub(".xlsx","_fdr0.1_spoke_pathway.xlsx", files[i]))
+     }
+  }
+
+```
+
+## 1.6 Compare metagenomics pathways with metabolomic pathways 
+```{r}
+# read differential microbes
+micro.files = c("../WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_species_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx", list.files(path = "../WOL_shogun/Linear_regression/Linear_filter_variance/treatment_RRMSonly/",pattern = "*species.*HHC.*xlsx", full.names = T))
+diff.micro = lapply(micro.files[1:5],function(x){
+  y1 =read.xls(x, sheet =1,head=T,as.is=T)
+  y = y1
+  #y= y1[y1[,5] < 0.05,]
+   #y = y[y[,1] <= quantile(y1[,1],seq(0,1,0.05))["5%"] | y[,1] >= quantile(y1[,1],seq(0,1,0.05))["95%"], ]
+  y
+})
+diff.micro.up= lapply(diff.micro, function(x){
+  y= x[x[,1] > 0,]
+  y 
+})
+diff.micro.down = lapply(diff.micro, function(x){
+  y= x[x[,1] < 0, ]
+  y
+})
+
+diff.micro=lapply(diff.micro, function(x){
+  x$microbe =ifelse(x[,1] >0, "Up","Down")
+  x
+})
+
+# read differential microbial pathways
+micropwy.files=c("../WOL_shogun/Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_class5_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx", list.files(path = "../WOL_shogun/Linear_regression/Linear_filter_variance/treatment_RRMSonly/", pattern = "*class5.*HHC.*xlsx", full.names = T))
+              
+diff.micropwy = lapply(micropwy.files[1:5], function(x){
+  y =read.xls(x,sheet =1,head=T,as.is=T)
+  y$pwy = sapply(y$taxonomy, function(x) unlist(strsplit(x, ": "))[1])
+  y$pwy.name = sapply(y$taxonomy, function(x) unlist(strsplit(x, ": "))[2])
+  y = y[y[,5] < 0.05, ]
+  y
+})
+
+diff.micropwy.up = lapply(diff.micropwy,function(x){
+  y= x[x[,1] > 0,]
+  y
+})
+diff.micropwy.down = lapply(diff.micropwy,function(x){
+  y = x[x[,1] < 0,]
+  y
+})
+
+diff.micropwy=lapply(diff.micropwy, function(x){
+  x$micropwy =ifelse(x[,1] >0, "Up","Down")
+  x
+})
+
+
+mts.files = c("Linear_regression_serum/disease_course/Linear_coefficient_metabolite_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random_p0.05_MetaCyc_humann2_metagenomic_pathway.xlsx", list.files(path = "Linear_regression_serum/treatment_RRMSonly/", pattern = "*HHC.*p0.05_MetaCyc_humann2_metagenomic_pathway.xlsx", full.names = T))
+
+diff.mtspwy.up = lapply(mts.files, function(x){
+  sheets = excel_sheets(x)
+  if(any(grepl("up",sheets))){
+        y =read_excel(x, sheet ="spoke_path_up")
+        y$metabolic_pwy = "Up"
+        y
+  }else{
+    y =NULL
+  }
+})
+
+diff.mtspwy.down = lapply(mts.files, function(x){
+  sheets = excel_sheets(x)
+  if(any(grepl("down",sheets))){
+    y =read_excel(x, sheet ="spoke_path_down")
+    y$metabolic_pwy = "Down"
+        y
+  }else{
+   y = NULL 
+  }
+})
+
+diff.mtspwy= list()
+for(i in 1:length(diff.mtspwy.down)){
+  diff.mtspwy[[i]] = rbind(diff.mtspwy.up[[i]],diff.mtspwy.down[[i]])
+}
+
+names(diff.mtspwy) = names(diff.micropwy)=names(diff.micro) = names(diff.micro.up) =names(diff.micro.down)  =names(diff.micropwy.up) =names(diff.micropwy.down) = names(diff.mtspwy.up) = names(diff.mtspwy.down)  = c("Untreated", "Dimethyl fumarate", "Fingolimod","Glatiramer acetate", "Interferon")
+
+# check overlapped pathways
+pwy.both.up = lapply(names(diff.micro.up), function(x){
+  y =diff.mtspwy.up[[x]][diff.mtspwy.up[[x]]$Matches %in% diff.micropwy.up[[x]]$pwy,]
+ y$pwy.name = diff.micropwy.up[[x]][match(y$Matches, diff.micropwy.up[[x]]$pwy), "pwy.name"]
+  y
+})
+pwy.both.down = lapply(names(diff.micro.up), function(x){
+  y = diff.mtspwy.down[[x]][diff.mtspwy.down[[x]]$Matches %in% diff.micropwy.down[[x]]$pwy,]
+    y$pwy.name = diff.micropwy.down[[x]][match(y$Matches, diff.micropwy.down[[x]]$pwy), "pwy.name"]
+  y
+
+})
+names(pwy.both.up) = names(pwy.both.down)= names(diff.micro.up)
+WriteXLS(pwy.both.up, "results/Compare_microbial_metabolic_pathways_upregulated_p0.05.xlsx")
+WriteXLS(pwy.both.down, "results/Compare_microbial_metabolic_pathways_downregulated_p0.05.xlsx")
+
+pwy.both.updown1 = lapply(names(diff.micro.up), function(x){
+  y = diff.mtspwy.up[[x]][diff.mtspwy.up[[x]]$Matches %in% diff.micropwy.down[[x]]$pwy,]
+    y$pwy.name = diff.micropwy.down[[x]][match(y$Matches, diff.micropwy.down[[x]]$pwy), "pwy.name"]
+  y
+}) #none
+pwy.both.updown2 = lapply(names(diff.micro.up), function(x){
+  y = diff.mtspwy.down[[x]][diff.mtspwy.down[[x]]$Matches %in% diff.micropwy.up[[x]]$pwy,]
+    y$pwy.name = diff.micropwy.up[[x]][match(y$Matches, diff.micropwy.up[[x]]$pwy), "pwy.name"]
+  y
+})
+names(pwy.both.updown2) = names(pwy.both.updown1)= names(diff.micro.up)
+WriteXLS(pwy.both.updown2, "results/Compare_microbial_pathway_upregulated_metabolic_pathways_downregulated_p0.05.xlsx")
+
+############# check overlapped pathways no matter up or down
+pwy.both = lapply(names(diff.micro), function(x){
+  y = diff.mtspwy[[x]][diff.mtspwy[[x]]$Matches %in% diff.micropwy[[x]]$pwy,]
+    y$pwy.name = diff.micropwy[[x]][match(y$Matches, diff.micropwy[[x]]$pwy), "pwy.name"]
+    y$micropwy = diff.micropwy[[x]][match(y$Matches, diff.micropwy[[x]]$pwy), "micropwy"]
+  y
+})
+names(pwy.both) = names(diff.micro)
+WriteXLS(pwy.both, "results/Compare_microbial_metabolic_pathways_overlapped_p0.05.xlsx")
+
+# check overlapped microbes
+micro.both.up = lapply(names(diff.micro.up), function(x){
+  y = pwy.both.up[[x]][pwy.both.up[[x]]$Organism %in% diff.micro.up[[x]]$taxonomy,]
+  y
+})
+micro.both.down = lapply(names(diff.micro.down), function(x){
+  y = pwy.both.down[[x]][pwy.both.down[[x]]$Organism %in% diff.micro.down[[x]]$taxonomy,]
+  y
+})
+names(micro.both.down )=names(micro.both.up)=names(diff.micro.down)
+WriteXLS(micro.both.up, "results/Compare_microbial_metabolic_pathways_upregulated_differential_microbes_p0.05_coef95.xlsx")
+WriteXLS(micro.both.down, "results/Compare_microbial_metabolic_pathways_downregulated_differential_microbes_p0.05_coef95.xlsx")
+micro.both.updown1 = lapply(names(diff.micro.up), function(x){
+    y = pwy.both.up[[x]][pwy.both.up[[x]]$Organism %in% diff.micro.down[[x]]$taxonomy,]
+  y
+})
+micro.both.updown2 = lapply(names(diff.micro.up), function(x){
+    y = pwy.both.down[[x]][pwy.both.down[[x]]$Organism %in% diff.micro.up[[x]]$taxonomy,]
+  y
+})
+names(micro.both.updown2 )=names(micro.both.updown1)=names(diff.micro.down)
+WriteXLS(micro.both.updown2, "results/Compare_microbial_metabolic_pathways_downregulated_differential_microbes_upregulated_p0.05_coef95.xlsx")
+
+#### check with microbes no matter updown
+micro.both= lapply(names(diff.micro), function(x){
+    y = pwy.both[[x]][pwy.both[[x]]$Organism %in% diff.micro[[x]]$taxonomy,]
+  y$microbe = diff.micro[[x]][match(y$Organism,diff.micro[[x]]$taxonomy), "microbe"]
+  y
+})
+names(micro.both) =names(diff.micro)
+WriteXLS(micro.both, "results/Compare_microbial_metabolic_pathways_overlapped_differential_microbes_p0.05.xlsx")
+
+# heatmap plot the metabolites
+micro.mts= read.csv("results/Microbiome_metabolites/Microbes_metabolites_organized.csv",head=T,as.is=T)
+micro.mts = micro.mts$CHEMICAL_NAME
+micro.mts.pwy = lapply(pwy.all,function(x){
+  y = x[match(micro.mts,x$taxonomy),]
+  y
+})
+
+
+
+CoefHeatmap(diff.species = micro.mts.pwy, fdr =NULL,p.value = 0.05,colnames=names(df.files),out.file =paste(dir.out, paste("UntreatedRRMS_treatedRRMS_HHC_heatmap_microbe_related_",index,"_norow_cluster_p0.05.pdf",sep=""),sep=""), width =5, height =8,angle_col = 45,cluster_rows = F)
+
+```
+
+### 1.6.1 Heatmap metabolites (stool, serum and microbiome)
+```{r}
+mts.selected = unique(unlist(lapply(stool.pwy.both,function(x) x$CHEMICAL_NAME)))
+
+# check if the selected metabolites in serum
+serum.selected= intersect(mts.selected, mt.id.serum$CHEMICAL_NAME)
+stool.selected=setdiff(mts.selected, mt.id.serum$CHEMICAL_NAME)
+
+# plot the metabolites in both stool and serum
+data1 = lapply(pwy.all.stool ,function(x){
+   y = x[x$taxonomy %in% serum.selected, c(which(colnames(x) == "taxonomy"),1,5)]
+  y
+})
+data2 = lapply(pwy.all.serum ,function(x){
+   y = x[x$taxonomy %in% serum.selected, c(which(colnames(x) == "taxonomy"),1,5)]
+  y
+})
+
+dataall1 = Reduce(function(x,y) merge(x,y, by = "taxonomy",all =T),data1)
+rownames(dataall1) = dataall1$taxonomy
+dataall1 = dataall1[,-1]
+dataall2 = Reduce(function(x,y) merge(x,y, by = "taxonomy",all =T),data2)
+rownames(dataall2) = dataall2$taxonomy
+dataall2 = dataall2[,-1]
+
+coefs1 = dataall1[,grepl("Coef", colnames(dataall1))]
+pvls1 = dataall1[,grepl("Pr", colnames(dataall1))]
+coefs2 = dataall2[,grepl("Coef", colnames(dataall2))]
+pvls2 = dataall2[,grepl("Pr", colnames(dataall2))]
+
+colnames(coefs1) =colnames(pvls1) = paste(names(pwy.all.stool),"stool", sep= "_")
+colnames(coefs2) =colnames(pvls2) = paste(names(pwy.all.stool),"serum", sep= "_")
+ 
+coefs = cbind(coefs1, coefs2)
+coefs= coefs[,c(1,6,2,7,3,8,4,9,5,10)]
+pvls = cbind(pvls1, pvls2)
+pvls= pvls[,c(1,6,2,7,3,8,4,9,5,10)]
+
+pvls = ifelse(pvls < 0.001, "***", ifelse(pvls < 0.01, "**",ifelse(pvls < 0.05, "*", ifelse(pvls ==1,"NA", ""))))
+
+ 
+coef.min = min(coefs)
+coef.max = max(coefs)
+
+breaksList1 = seq(coef.min, 0,by = 0.01)
+breaksList2 = seq(0.001,coef.max,by = 0.01)
+pheatmap(coefs,cluster_rows = T, cluster_cols = F, show_colnames = T,col = c(colorRampPalette(c("#053061", "white"))(length(breaksList1)),colorRampPalette(c( "white","firebrick3"))(length(breaksList2))),breaks = c(breaksList1, breaksList2),display_numbers = pvls,border_color="black",fontsize = 10,fontsize_number = 14,number_color = "black",angle_col= 45,fontsize_row = 12, fontsize_col = 12)
+dev.copy2pdf(file =paste(dir.out, paste("UntreatedRRMS_treatedRRMS_HHC_heatmap_",index,"_overlaped_pathways_with_microbiome_stool_both.pdf",sep=""),sep=""), width = 7, height= 8,useDingbats =F)
+
+
+# plot a list of stool only metabolites
+data3 = lapply(pwy.all.stool ,function(x){
+   y = x[x$taxonomy %in% stool.selected, c(which(colnames(x) == "taxonomy"),1,5)]
+  y
+})
+dataall3 = Reduce(function(x,y) merge(x,y, by = "taxonomy",all =T),data3)
+rownames(dataall3) = dataall3$taxonomy
+dataall3 = dataall3[,-1]
+
+coefs3 = dataall3[,grepl("Coef", colnames(dataall3))]
+pvls3 = dataall3[,grepl("Pr", colnames(dataall3))]
+
+colnames(coefs3) =colnames(pvls3) = names(pwy.all.stool)
+pvls3 = ifelse(pvls3 < 0.001, "***", ifelse(pvls3 < 0.01, "**",ifelse(pvls3 < 0.05, "*", ifelse(pvls3 ==1,"NA", ""))))
+
+ 
+coef.min = min(coefs3)
+coef.max = max(coefs3)
+
+breaksList1 = seq(coef.min, 0,by = 0.01)
+breaksList2 = seq(0.001,coef.max,by = 0.01)
+
+pheatmap(coefs3,cluster_rows = T, cluster_cols = F, show_colnames = T,col = c(colorRampPalette(c("#053061", "white"))(length(breaksList1)),colorRampPalette(c( "white","firebrick3"))(length(breaksList2))),breaks = c(breaksList1, breaksList2),display_numbers = pvls3,border_color="black",fontsize = 10,fontsize_number = 14,number_color = "black",angle_col= 45,fontsize_row = 12, fontsize_col = 12)
+dev.copy2pdf(file =paste(dir.out, paste("UntreatedRRMS_treatedRRMS_HHC_heatmap_",index,"_overlaped_pathways_with_microbiome_stool_only.pdf",sep=""),sep=""), width = 5, height= 3.5,useDingbats =F)
+
+## plot SCFAs
+index = "SCFA"
+serum.files = c("Untreated" =paste("Linear_regression_serum//disease_course//Linear_coefficient_", index, "_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "Dimethyl fumarate" = paste("Linear_regression_serum//treatment_RRMSonly/Linear_coefficient_", index, "_Dimethyl fumarate_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "Fingolimod" = paste("Linear_regression_serum//treatment_RRMSonly/Linear_coefficient_",index, "_Fingolimod_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "Glatiramer acetate" = paste("Linear_regression_serum//treatment_RRMSonly/Linear_coefficient_", index, "_Glatiramer acetate_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""), "Interferon" =paste( "Linear_regression_serum//treatment_RRMSonly/Linear_coefficient_", index, "_Interferon_RRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",sep=""))
+
+
+scfa.serum = lapply(serum.files, function(x) read.xls(x, head=T,as.is=T,sheet =1))
+scfa.stool = lapply(gsub("serum", "stool", serum.files), function(x) read.xls(x, head=T,as.is=T,sheet =1))
+
+
+scfa.serum = lapply(scfa.serum ,function(x){
+   y = x[, c(ncol(x),1,5)]
+  y
+})
+scfa.stool= lapply(scfa.stool ,function(x){
+   y = x[, c(ncol(x),1,5)]
+  y
+})
+scfa.serum = Reduce(function(x,y) merge(x,y, by = "taxonomy",all =T),scfa.serum)
+rownames(scfa.serum) = scfa.serum$taxonomy
+scfa.serum = scfa.serum[,-1]
+scfa.stool = Reduce(function(x,y) merge(x,y, by = "taxonomy",all =T),scfa.stool)
+rownames(scfa.stool) = scfa.stool$taxonomy
+scfa.stool = scfa.stool[,-1]
+
+coefs1 = scfa.stool[,grepl("Coef", colnames(scfa.stool))]
+pvls1 = scfa.stool[,grepl("Pr", colnames(scfa.stool))]
+coefs2 = scfa.serum[,grepl("Coef", colnames(scfa.serum))]
+pvls2 = scfa.serum[,grepl("Pr", colnames(scfa.serum))]
+
+colnames(coefs1) =colnames(pvls1) = paste(names(serum.files),"stool", sep= "_")
+colnames(coefs2) =colnames(pvls2) = paste(names(serum.files),"serum", sep= "_")
+ 
+coefs = cbind(coefs1, coefs2)
+coefs= coefs[,c(1,6,2,7,3,8,4,9,5,10)]
+pvls = cbind(pvls1, pvls2)
+pvls= pvls[,c(1,6,2,7,3,8,4,9,5,10)]
+
+pvls = ifelse(pvls < 0.001, "***", ifelse(pvls < 0.01, "**",ifelse(pvls < 0.05, "*", ifelse(pvls ==1,"NA", ""))))
+
+ 
+coef.min = min(coefs)
+coef.max = max(coefs)
+
+breaksList1 = seq(coef.min, 0,by = 0.01)
+breaksList2 = seq(0.001,coef.max,by = 0.01)
+pheatmap(coefs,cluster_rows = T, cluster_cols = F, show_colnames = T,col = c(colorRampPalette(c("#053061", "white"))(length(breaksList1)),colorRampPalette(c( "white","firebrick3"))(length(breaksList2))),breaks = c(breaksList1, breaksList2),display_numbers = pvls,border_color="black",fontsize = 10,fontsize_number = 14,number_color = "black",angle_col= 45,fontsize_row = 12, fontsize_col = 12)
+
+dev.copy2pdf(file =paste(dir.out, paste("UntreatedRRMS_treatedRRMS_HHC_heatmap_",index,"_overlaped_pathways_with_microbiome_stool_both.pdf",sep=""),sep=""), width = 7, height= 8,useDingbats =F)
+
+
+
+```
+
+
+
+##1.7  Scatterplot of metabolites/microbes
+```{r}
+load("../../rdata/taxa.list.ast.rda")
+# diet
+load("../../../Dietary_questionnaires_round2/rdata/dietres.rda")
+
+diet.tab = dietres[,c(1,11:ncol(dietres))]
+rownames(diet.tab) = gsub("-", ".",diet.tab$RESPONDENTID)
+diet.tab= diet.tab[,-1]
+
+rel.list = list(mts.stool, mts.serum,t(taxa.list.ast[[6]]),t(stool.scfas),t(serum.scfas),diet.tab)
+
+rel.list.meta = lapply(rel.list, function(x){
+  rownames(x)=gsub("-", ".", rownames(x))
+  y = merge(x, mt.seqmeta, by ="row.names")
+  y
+})
+
+data = rel.list.meta[[1]] 
+#data[,2:1678] = log10(data[,2:1678])
+# p-cresol 100001018
+
+products = c("Calciummg", "Magnesiummg", "Potassiummg","Ironmg","Zincmg","Sodiumsaltmg")
+
+products= c("myo-inositol", "lysine", "pyruvate")
+products.id = mt.id.stool[match(products, mt.id.stool$CHEMICAL_NAME), "CHEM_ID" ]
+
+colnames(data) = gsub("100001018", "pcresol", colnames(data))
+colnames(data) = gsub("875", "paba", colnames(data))
+colnames(data) = mygsub(c("Phascolarctobacterium faecium" ), c("Phascolarctobacterium_faecium"), colnames(data))
+
+data2 = data[data$iMSMS_ID %in% treatmenthhc.rrms.seqmeta$Interferon_RRMS_HHC$iMSMS_ID,]
+data2 = data[data$iMSMS_ID %in% mtseqmeta.comp$UntreadMS_HHC$iMSMS_ID,]
+
+g = list()
+for(i in 1:length(products)){
+  y = gsub("-|[(]|[)]| ", "", products[i])
+  g[[i]] = ggplot(data, aes_string(x = "disease", y = y))+
+  geom_boxplot(aes(colour = disease), outlier.size = NA,outlier.shape = NA,fill =NA) +geom_jitter(shape=16, position=position_jitter(0.2),aes(colour = disease),cex = 0.8) + scale_color_manual(values = color.list[["disease"]]) + 
+  ylab(paste("log10 ", products[i], sep="")) +
+  xlab("") + theme(legend.position = "none") 
+}
+
+g  = grid.arrange(grobs = g, nrow =1)
+
+
+# for SCFA compare among treatments
+data2 = data[data$household %in% data[data$disease_course =="RRMS", "household"],]
+colnames(data2) =gsub("Acetic acid", "Aceticacid",colnames(data2))
+colnames(data2) =gsub("Propionic acid", "Propionicacid",colnames(data2))
+
+data2$treatments_comp = data2$treatments_control
+data2$treatments_comp =mygsub(c("Control_Untreated", "Control_Dimethyl fumarate","Control_Fingolimod", "Control_Glatiramer acetate", "Control_Interferon"),c("Untreated", "Dimethyl fumarate", "Fingolimod","Glatiramer acetate", "Interferon"), data2$treatments_comp)
+data2 = data2[!data2$treatments_comp %in% c("Control_Natalizumab", "Natalizumab","Control_ocrevus(rituxan)","ocrevus(rituxan)"),]
+data2$treatments_comp = factor(data2$treatments_comp,levels=c("Untreated", "Dimethyl fumarate", "Fingolimod","Glatiramer acetate", "Interferon"))
+
+# plot SCFA by group
+ggplot(data2, aes_string(x = "treatments_comp", y =  "Propionicacid"))+
+    geom_boxplot(aes(colour = treatments_control), outlier.size = NA,outlier.shape = NA,fill =NA) +geom_jitter(shape=16, position=position_jitterdodge(jitter.width = 0.7),aes(colour =treatments_control),cex = 1) + scale_color_manual(values = treatments.cols) + 
+    ylab("Propionic acid in feces (ug/g)") +
+    xlab("") + theme(legend.position = "none") 
+```
+
+## 1.8 Density plot
+```{r}
+require(ggridges)
+scfa.list = list(stool = stool.scfas, serum = serum.scfas)
+scfa.list.meta= lapply(scfa.list, function(x){
+  y = merge(t(x), mt.seqmeta, by = "row.names")
+  
+  y$treatment_group = mygsub(c("Control_Untreated", "Control_Interferon","Control_Glatiramer acetate","Control_Fingolimod", "Control_Dimethyl fumarate"), c("Untreated","Interferon" ,"Glatiramer acetate","Fingolimod", "Dimethyl fumarate"), y$treatments_control)
+  y= y[!y$treatments_control %in% c("Control_Natalizumab","Control_ocrevus(rituxan)", "ocrevus(rituxan)", "Natalizumab"), ]
+  y$treatment_group =factor(y$treatment_group,levels= rev(c("Untreated","Dimethyl fumarate", "Fingolimod","Glatiramer acetate", "Interferon")))
+  y
+})
+
+colnames(scfa.list.meta[["serum"]])= gsub("Propionic acid", "Propionicacid", colnames(scfa.list.meta[["serum"]]))
+
+colnames(scfa.list.meta[["serum"]])= gsub("Acetic acid", "Aceticacid", colnames(scfa.list.meta[["serum"]]))
+
+ggplot(scfa.list.meta[["serum"]], aes(x = Propionicacid, y = treatment_group, fill = treatments_control)) + geom_density_ridges(quantile_lines=TRUE,linetype = 1,quantile_fun=function(x,...)mean(x), alpha =0.7,scale=1) + scale_fill_manual(values = treatments.cols)
+
+ggplot(scfa.list.meta[["serum"]], aes(x = Propionicacid, y = treatment_group, fill = treatments_control)) + geom_density_ridges(quantile_lines=TRUE,linetype = 1,quantile_fun=function(x,...)mean(x), alpha =0.7,scale=1) + scale_fill_manual(values = treatments.cols)
+
+# plot global metabolites
+plot.names = c("myo-inositol", "lysine","pyruvate")
+plot.ids = mt.id.serum[match(plot.names, mt.id.serum$CHEMICAL_NAME), "CHEM_ID"]
+for(i in 1:length(plot.ids)){
+  colnames(mts.list.meta2[["stool"]]) = gsub(plot.ids[i],gsub("-","",plot.names[i]),colnames(mts.list.meta2[["stool"]]) )
+  colnames(mts.list.meta2[["serum"]]) = gsub(plot.ids[i],gsub("-","",plot.names[i]),colnames(mts.list.meta2[["serum"]]) )
+}
+
+ggplot(mts.list.meta2[["stool"]], aes(x = myoinositol, y = treatment_group, fill = treatments_control)) + geom_density_ridges(quantile_lines=TRUE,linetype = 1,quantile_fun=function(x,...)mean(x), alpha =0.7,scale=1) + scale_fill_manual(values = treatments.cols)
+
+# RRMS only
+data1 = mts.list.meta2[["stool"]]
+data1 = data1[data1$household %in% data1[data1$disease_course =="RRMS", "household"],]
+data2 = mts.list.meta2[["serum"]]
+data2 = data2[data2$household %in% data2[data2$disease_course =="RRMS", "household"],]
+
+g1 = ggplot(data1, aes(x = myoinositol, y = treatment_group, fill = treatments_control)) + geom_density_ridges(quantile_lines=TRUE,linetype = 1,quantile_fun=function(x,...)mean(x), alpha =0.7,scale=1) + scale_fill_manual(values = treatments.cols) + theme(legend.position = "none") +ylab("")
+
+g2= ggplot(data2, aes(x = myoinositol, y = treatment_group, fill = treatments_control)) + geom_density_ridges(quantile_lines=TRUE,linetype = 1,quantile_fun=function(x,...)mean(x), alpha =0.7,scale=1) + scale_fill_manual(values = treatments.cols) + theme(legend.position = "none") +ylab("")
+
+```
+
+
+## 1.8 PCA plot
+```{r}
+pc = prcomp(mts.serum, scale. = F, center = T)
+var_explained <- pc$sdev^2/sum(pc$sdev^2)
+
+pc.comp = pc$x
+rownames(pc.comp) =gsub("-", ".", rownames(pc.comp)) 
+pc.meta = merge(pc.comp, mt.seqmeta,by = "row.names")
+
+ 
+ g1 =  ggplot(pc.meta, aes(x=PC1,y=PC2,colour = disease)) + geom_point(size=2,aes(colour = disease)) +
+  labs(x=paste0("PC1: ",round(var_explained[1]*100,1),"%"),
+       y=paste0("PC2: ",round(var_explained[2]*100,1),"%")) +
+    scale_color_manual(values =  disease.cols) +
+  theme(legend.position="top") 
+     ggsave(g1, file = "results/Serum_Metabolites_pca_disease.pdf", width =5, height =5,useDingbats =F)  
+ 
+  g2 =  ggplot(pc.meta, aes(x=PC1,y=PC2,colour = treatments)) + geom_point(size=2,aes(colour = treatments)) +
+  labs(x=paste0("PC1: ",round(var_explained[1]*100,1),"%"),
+       y=paste0("PC2: ",round(var_explained[2]*100,1),"%")) +
+    scale_color_manual(values = treatments.cols[c("Control","Untreated", "Dimethyl fumarate", "Fingolimod", "Glatiramer acetate", "Interferon", "ocrevus(rituxan)", "Natalizumab")]) +
+  theme(legend.position="top")+
+    guides(color=guide_legend(nrow=3, byrow=TRUE))
+   ggsave(g2, file = "results/Serum_Metabolites_pca_treatment.pdf", width =5, height =5.7,useDingbats =F) 
+   
+   # plot by each treatment
+   g = list()
+   for(i in 1:length(treatmenthhc.rrms.seqmeta)){
+     nms = unique(treatmenthhc.rrms.seqmeta[[i]]$treatments_control)
+     data = pc.meta[pc.meta$treatments_control %in% nms,]
+   
+    g[[i]] =  ggplot(data, aes(x=PC1,y=PC2,colour = treatments_control)) + geom_point(size=2,aes(colour = treatments_control)) +
+  labs(x=paste0("PC1: ",round(var_explained[1]*100,1),"%"),
+       y=paste0("PC2: ",round(var_explained[2]*100,1),"%")) +
+    scale_color_manual(values = treatments.cols[nms]) +
+  theme(legend.position="top")
+    }
+   g0 = gridExtra::grid.arrange(grobs=g, nrow =2)
+   ggsave(g0, file = "results/Serum_Metabolites_pca_treatment_each.pdf", width = 9, height = 7, useDingbats =F)
+```
+
+
+## 1.9 WGCNA on metabolites
+```{r}
+gsg = goodSamplesGenes(datExpr0, verbose = 3);
+gsg$allOK
+
+sampleTree = hclust(dist(datExpr0), method = "average");
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+sizeGrWindow(12,9)
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, 
+     cex.axis = 1.5, cex.main = 2)
+
+
+#=====================================================================================
+#
+#  Code chunk 6
+#
+#=====================================================================================
+
+
+# Plot a line to show the cut
+abline(h = 15, col = "red");
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 15, minSize = 10)
+table(clust)
+# clust 1 contains the samples we want to keep.
+keepSamples = (clust==1)
+datExpr = datExpr0[keepSamples, ]
+nGenes = ncol(datExpr)
+nSamples = nrow(datExpr)
+
+
+#=====================================================================================
+#
+#  Code chunk 7
+#
+#=====================================================================================
+
+
+traitData = read.csv("ClinicalTraits.csv");
+dim(traitData)
+names(traitData)
+
+# remove columns that hold information we do not need.
+allTraits = traitData[, -c(31, 16)];
+allTraits = allTraits[, c(2, 11:36) ];
+dim(allTraits)
+names(allTraits)
+
+# Form a data frame analogous to expression data that will hold the clinical traits.
+
+femaleSamples = rownames(datExpr);
+traitRows = match(femaleSamples, allTraits$Mice);
+datTraits = allTraits[traitRows, -1];
+rownames(datTraits) = allTraits[traitRows, 1];
+
+collectGarbage();
+
+
+#=====================================================================================
+#
+#  Code chunk 8
+#
+#=====================================================================================
+
+
+# Re-cluster samples
+sampleTree2 = hclust(dist(datExpr), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(datTraits, signed = FALSE);
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(datTraits), 
+                    main = "Sample dendrogram and trait heatmap")
+
+
+#=====================================================================================
+#
+#  Code chunk 9
+#
+#=====================================================================================
+
+
+save(datExpr, datTraits, file = "FemaleLiver-01-dataInput.RData")
+
+```
+
+## 2 Spearman correlation betwene metabolites and microbes
+### 2.1 Correlation between 31 microbiota-derived metabolites and differential species
+```{r}
+load("~/Dropbox/1.project/iMSMS_round2_metagenomics/rdata/taxa.list.rel.rda")
+taxa = taxa.list.rel[[6]]
+
+# selected RRMS (untreated, and four treatments) and HHC samples
+houses = mt.seqmeta[mt.seqmeta$disease_course =="RRMS" & !mt.seqmeta$treatments_control %in% c("Natalizumab", "ocrevus(rituxan)"),"household" ]
+samples= mt.seqmeta[mt.seqmeta$household %in% houses,]$iMSMS_ID
+
+# get the species catalize the 31 metabolites
+taxa.selected = lapply(stool.pwy.both, function(x){
+  y =x[x$CHEMICAL_NAME %in% serum.selected, "Organism"]
+  unique(y)
+})
+taxa.selected= unique(unlist(taxa.selected))
+# remove the strain annotation for the taxa
+taxa.selected = gsub(" [(].*| ATCC.*", "", taxa.selected)
+
+# get species abundance in selected samples, and metabolize the metabolites
+sps = taxa[gsub("[[]|[]]", "", rownames(taxa)) %in% taxa.selected,colnames(taxa) %in% samples]
+sps = t(sps)
+
+mts.list = list(stool = mts.stool, serum = mts.serum)
+
+for(name in names(mts.list)){
+  # get stool/serum metabolites in selected samples
+  data = mts.list[[name]]
+  cor.mts = data[rownames(data) %in% samples,colnames(data) %in% mt.id.stool[mt.id.stool$CHEMICAL_NAME %in% serum.selected, 1]]
+  
+   # correlation between species and metabolites
+  cor = cor(sps, cor.mts, method ="spearman")
+ 
+  # significance of correlation
+  cor.p =matrix(NA, nrow = nrow(cor), ncol =ncol(cor))
+  for(i in 1:nrow(cor)){
+    for(n in 1:ncol(cor)){
+      cor.p[i,n] = cor.test(as.numeric(sps[,i]), as.numeric(cor.mts[,n]),method = "spearman")$p.value
+    }
+  }
+
+  rownames(cor.p) = rownames(cor)
+  colnames(cor.p) = colnames(cor)
+   
+  
+  # select the species with at least one significance
+  cor.p.sign= cor.p[rowSums(cor.p < 0.05) > 0,]  
+  
+  # keep only differential species
+  diff.sps = unique(unlist(lapply(diff.micro, function(x){
+    y = x$taxonomy
+    y
+  })))
+  cor.p.sign2= cor.p.sign[rownames(cor.p.sign) %in% diff.sps,] # 
+  cor.p.sign2= cor.p.sign2[,colSums(cor.p.sign2 < 0.05) > 0]
+ 
+  
+  cor2 = cor[match(rownames(cor.p.sign2),rownames(cor)), match(colnames(cor.p.sign2),colnames(cor))]
+  
+  cor.min = min(cor2)
+  cor.max = max(cor2)
+
+  pvls = ifelse(cor.p.sign2 < 0.001, "***", ifelse(cor.p.sign2 < 0.01, "**",ifelse(cor.p.sign2 < 0.05, "*", ifelse(cor.p.sign2 ==1,"NA", ""))))
+  
+  colnames(cor.p.sign2) =colnames(cor2) =mt.id.stool[match(colnames(cor2),mt.id.stool$CHEM_ID),"CHEMICAL_NAME"]
+  
+  breaksList1 = seq(cor.min, 0,by = 0.01)
+  breaksList2 = seq(0.001,cor.max,by = 0.01)
+  
+  pheatmap(cor2,cluster_rows = T, cluster_cols = T, show_colnames = T,col = c(colorRampPalette(c("darkgoldenrod4", "white"))(length(breaksList1)),colorRampPalette(c( "white","darkcyan"))(length(breaksList2))),breaks = c(breaksList1, breaksList2),display_numbers = pvls,border_color="black",fontsize = 10,fontsize_number = 14,number_color = "black",angle_col= 45,fontsize_row = 12, fontsize_col = 12)
+}
+
+
+```
+
+
+### 2.2 Correlation between each disease/treatmeant associated species and metabolites
+```{r}
+files = c("Linear_regression_stool/disease_course/Linear_coefficient_metabolite_UntreatedRRMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx", list.files(path = "Linear_regression_stool/treatment_RRMSonly/", pattern = "metabolite.*HHC.*random.xlsx", full.names = T))
+diff.mts.list= lapply(files, function(file){
+  x = read.xls(file, head=T,as.is=T)
+            y = x[x[,6] < 0.05 ,] 
+            z = y$taxonomy
+            z
+})
+diff.mts.list = lapply(diff.mts.list, function(x) intersect(x, serum.selected))
+names(diff.mts.list) = names(stool.pwy.both)
+names(diff.micro) =names(stool.pwy.both)
+
+for(name in names(mts.list)){
+  data = mts.list[[name]]
+  for(group in names(stool.pwy.both)){
+    # group = names(stool.pwy.both)[2]
+  # selected RRMS (untreated, and four treatments) and HHC samples
+    if(group == "Untreated"){
+      index =paste(group, "RRMS_HHC",sep="")
+    }else{
+      index =paste(group, "_RRMS_HHC",sep="")
+    }
+  
+  samples= mtseqmeta.comp[[index]]$iMSMS_ID
+  # get species abundance in selected samples, and metabolize the metabolites
+  #sps = taxa[gsub("[[]|[]]", "", rownames(taxa)) %in% taxa.selected,colnames(taxa) %in% samples]
+    sps = taxa[,colnames(taxa) %in% samples]
+  sps = t(sps)
+  # get stool metabolites associated with disease or DMT
+  dis.mts =diff.mts.list[[group]]
+  dis.mts = mt.id.stool[match(dis.mts,mt.id.stool$CHEMICAL_NAME), "CHEM_ID"]
+
+  cor.mts = data[rownames(data) %in% samples,colnames(data) %in% dis.mts]
+  
+    # correlation between species and metabolites, adjusting for age and BMI, gender
+  #cor = cor(sps, cor.mts, method ="spearman")
+ 
+  # significance of correlation
+  cor.res = cor.p =matrix(NA, nrow = ncol(sps), ncol =ncol(cor.mts))
+  for(i in 1:nrow(cor.res)){
+    for(n in 1:ncol(cor.res)){
+             res = pcor.test(x = sps[,i], y =cor.mts[,n],z = mtseqmeta.comp[[index]][,c("age","bmi")], method = "spearman")
+        cor.res[i,n] = res$estimate
+      cor.p[i,n] = res$p.value
+    }
+  }
+# p.adjust cor.p
+  cor.p2 = p.adjust(cor.p)
+  cor.p2 = matrix(cor.p2, ncol = ncol(cor.p))
+  
+  rownames(cor.p) =rownames(cor.p2) =rownames(cor.res)  = colnames(sps)
+  colnames(cor.p) = colnames(cor.p2) = colnames(cor.res) = colnames(cor.mts)
+  
+  # select the species with at least one significance
+  #cor.p.sign= cor.p[rowSums(cor.p < 0.05) > 0,]  
+    cor.p.sign= cor.p
+  
+    # select ec, species producing L-ornithine 
+  ecs = unique(metacyc[metacyc$Matches =="ARGININE-SYN4-PWY", ]$EC.Number)
+  ecs = ecs[ecs!=""]
+  diff.sps =unique(humann2.uniprot[humann2.uniprot$EC.number %in% ecs, "Organism"])
+  diff.sps = gsub(" [(]strain.*", "", diff.sps)
+  
+  # or,  keep only differential species
+  diff.sps = diff.micro[[group]]$taxonomy
+  
+  cor.p.sign2= cor.p.sign[rownames(cor.p.sign) %in% diff.sps,] # 
+ cor.p.sign2= cor.p.sign2[,colSums(cor.p.sign2 < 0.05) > 0]
+ 
+  cor = cor.res
+  cor2 = cor[match(rownames(cor.p.sign2),rownames(cor)), match(colnames(cor.p.sign2),colnames(cor))]
+  
+  cor.min = min(cor2)
+  cor.max = max(cor2)
+
+  pvls = ifelse(cor.p.sign2 < 0.001, "***", ifelse(cor.p.sign2 < 0.01, "**",ifelse(cor.p.sign2 < 0.05, "*", ifelse(cor.p.sign2 ==1,"NA", ""))))
+  
+  colnames(cor.p.sign2) =colnames(cor2) =mt.id.stool[match(colnames(cor2),mt.id.stool$CHEM_ID),"CHEMICAL_NAME"]
+  
+  breaksList1 = seq(-0.3, 0,by = 0.01)
+  breaksList2 = seq(0.001,0.3,by = 0.01)
+  
+  pheatmap(cor2,cluster_rows = T, cluster_cols = T, show_colnames = T,col = c(colorRampPalette(c("darkgoldenrod4", "white"))(length(breaksList1)),colorRampPalette(c( "white","darkcyan"))(length(breaksList2))),breaks = c(breaksList1, breaksList2),display_numbers = pvls,border_color="black",fontsize = 10,fontsize_number = 14,number_color = "black",angle_col= 45,fontsize_row = 12, fontsize_col = 12)
+  
+}
+}
+
+
+```
+
+### 2.3 EDSS correlation
+```{r}
+houses = mt.seqmeta[mt.seqmeta$disease_course =="RRMS" & !mt.seqmeta$treatments_control %in% c("Natalizumab", "ocrevus(rituxan)"),"household" ]
+samples= mt.seqmeta[mt.seqmeta$household %in% houses,]$iMSMS_ID
+
+
+mts.list.select = lapply(mts.list, function(x){
+  y = x[rownames(x) %in% samples,colnames(x) %in% mt.id.stool[mt.id.stool$CHEMICAL_NAME %in% serum.selected, 1]]
+  y
+})
+mts.list.select.meta  = lapply(mts.list.select, function(x){
+  y = merge(x, seqmeta, by = "row.names")
+  y
+})
+
+feature.number = lapply(mts.list.select, ncol)
+spearman.list= list() 
+require(ppcor)
+
+for(i in 1:length(mts.list.select.meta)){
+  y = mts.list.select.meta[[i]]
+  cor.res = matrix(NA, nrow = feature.number[[i]], ncol=2 )
+  for(n in 1:feature.number[[i]]){
+    name = colnames(y)[n+1]
+    value = y[,c(name,"uGMSSS", "age","bmi")]
+    value = value[value[,name] >0,]
+    
+    #value$sex =mygsub(c("F", "M"),c(1,2),value$sex)
+    # sample size of 7 was chosen by 
+    if(nrow(value) >= 7){
+      value = apply(value, 2, as.numeric)
+      res = pcor.test(x = value[,1], y =value[,"uGMSSS"],z = value[,c("age","bmi")], method = "spearman")
+      cor.res[n,1] = res$estimate
+      cor.res[n,2] = res$p.value
+    }else{
+      cor.res[n,1] = NA
+      cor.res[n,2] = NA 
+    }
+  }
+  
+  colnames(cor.res) = c("r","pvalue")
+  rownames(cor.res) = colnames(y)[2:(feature.number[[i]]+1)]
+  
+  cor.res = data.frame(cor.res,stringsAsFactors = F)
+  cor.res= cor.res[!is.na(cor.res$r),]
+  cor.res$fdr = p.adjust(cor.res$pvalue, method= "fdr")
+  cor.res = cor.res[!is.na(cor.res$fdr), ]
+  #cor.res = cor.res[cor.res$fdr < 0.05, ]
+  spearman.list[[i]] = cor.res
+}
+ spearman.list =lapply( spearman.list,function(x){
+   rownames(x) = mt.id.stool[match(rownames(x), mt.id.stool$CHEM_ID), "CHEMICAL_NAME"]
+   x
+ })
+
+```
+

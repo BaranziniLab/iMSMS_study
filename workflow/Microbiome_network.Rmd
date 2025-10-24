@@ -1,0 +1,1257 @@
+---
+title: "Microbiome_network with QIIME2 plugin q2-SCNIC"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Introduction
+```{r}
+require("gdata")
+require("ggplot2")
+theme_set(theme_bw() +
+            #eliminates background, gridlines, and chart border
+            theme(text = element_text(size=15),
+                  plot.title = element_text(size = 12, face = "bold",hjust = 0.5),
+                  axis.line = element_line(colour = "black",size =0.5),
+                  plot.background = element_blank()
+                  ,panel.grid.major = element_blank()
+                  ,panel.grid.minor = element_blank(),
+                  axis.text.x = element_text(colour = "black"),
+                  axis.text.y = element_text(colour = "black"),
+                  panel.border =  element_blank()))
+
+#                  panel.border = element_rect(size =0)))
+require("readxl")
+```
+
+# Import data
+```{bash}
+qiime tools import --input-path  otu_table_filtered.biom --type 'FeatureTable[Frequency]' --input-format BIOMV210Format --output-path otu_table_filtered.qza
+
+# import network gml file (for SparCC from spiecEasi)
+qiime tools import --input-path network.gml --type 'Network' --input-format GraphModelingLanguageFormat  --output-path network.qza
+
+```
+
+#1. Running q2-SCNIC
+
+SCNIC can be broken up into three main steps:
+*Filtering your data so that it is useful for correlation analysis
+*Making a correlation table and network
+*Finding modules in the correlation network
+
+We will run through these steps with the `otu_table_filtered.qza` generated above but you can run it with any feature table by changing the name of fake_data.qza to whatever your qza is called.
+
+## 1.1 Filtering your data
+Correlational analyses are hampered by having large numbers of zeroes. Therefore we are first going to remove these from our data. In the q2-SCNIC plugin a method called sparcc-filter to do this based on the parameters used in Friedman et al. 3 This method removes all samples with a feature abundance total below 500 and all features with an average abundance less than 2 across all samples. You do not need to use these parameters and can use any method you chose to do this. Other methods for filtering feature tables are outlined here. 2
+
+To use the sparcc filter use this command:
+```{bash}
+qiime SCNIC sparcc-filter \
+--i-table otu_table_filtered.qza \
+--o-table-filtered otu_table_filtered_filtered.qza
+
+# old
+qiime SCNIC sparcc-filter \
+--i-table otu_table_filtered.qza \
+--cmd-config config.txt \
+--o-table-filtered otu_table_filtered_filtered.qza
+
+# config.txt
+[SCNIC.sparcc-filter]
+--p-min-frequency=100
+
+```
+
+## 1.2 Calculating correlations and making your network
+To calculate all pairwise correlations between features in your filtered table use the following command:
+```{bash}
+qiime SCNIC calculate-correlations \
+--i-table otu_table_filtered_filtered.qza \
+--p-method spearman \
+--o-correlation-table otu_table_spearman_correls.qza
+```
+
+(Optional) Making a correlation network
+
+From fake_correls.qza we can generate a network based on a minimum R value cutoff. A network will also be generated when finding modules but if you only want to make a network and not find modules you can do this and finish the tutorial here. This can be done using this command:
+```{bash}
+qiime SCNIC build-correlation-network-r \
+--i-correlation-table otu_table_spearman_correls.qza \
+--p-min-val .35 \
+--o-correlation-network otu_table_spearman_net.qza
+
+#option - build network based on p value
+qiime SCNIC build-correlation-network-p \
+--i-correlation-table otu_table_sparCC_correls.qza \
+--p-max-val 0.05 \
+--o-correlation-network otu_table_sparCC_net.qza
+
+```
+
+The --p-min-val parameter sets the minimum R value required to call a correlation between two features significant and therefore draw an edge between them. In this example we used a minimum value of .35. This is a common cutoff used with the sparCC correlation metric when used with 16S data.
+
+
+## 1.3 Detecting and summarizing modules of features
+
+Areas of a network which are strongly interconnected are called modules. With this step we detect these modules and summarize the features in them. The summarization is a simple sum of all features in your modules across samples. This makes it so that sample abundance counts remain the same after summarization and therefore this table can be used for further statistical tests like ANCOM 1 for testing for differential abundance.
+
+To detect and summarize modules use this command:
+
+```{bash}
+qiime SCNIC make-modules-on-correlations \
+--i-correlation-table otu_table_spearman_correls.qza \
+--i-feature-table otu_table_filtered.qza \
+--p-min-r .5 \
+--o-collapsed-table otu_table_filtered.collapsed0.5.qza \
+--o-correlation-network otu_table_spearman_net0.5.modules.qza \
+--o-module-membership otu_table_membership0.5.qza
+```
+
+
+The `otu_table_filtered.collapsed.qza` is a feature table you can use with any further non-phylogenetic analysis. fake_net.modules.qza is a network that is annotated with correlation information as well as module membership and can be exported from the .qza to visualize with tools such as Cytoscape.
+
+```{bash}
+qiime tools export --input-path otu_table_filtered.collapsed.qza --output-path otu_table_filtered.collapsed
+
+qiime tools export --input-path otu_table_membership.qza --output-path otu_table_membership
+
+qiime tools export --input-path otu_table_sparCC_net.modules.qza --output-path otu_table_sparCC_net.modules
+```
+
+The `otu_table_filtered.collapsed.qza` is viewable as metadata and can be turned into a visualization via this command:
+```{bash}
+qiime metadata tabulate \
+--m-input-file otu_table_membership.qza \
+--o-visualization otu_table_membership.qzv
+```
+
+This visualization can then be used to see what features are in each module.
+
+With that you have ran SCNIC and have a feature table with fewer features giving you more power for further analyses and a correlation network investigate correlations between features in your community of interest.
+
+1. Sparcc from SpiecEasy package
+```{bash}
+python /wynton/home/baranzinilab/xiaoyuanzhou/installed/utilities/SparCC/MakeBootstraps.py pathway.ppms.treated.txt -n 100  -o pathway.ppms.treated/pathway.ppms.treated &
+
+```
+
+
+#2. Network visualization by igraph
+After running q2-SCNIC, a network with modules are built, using igraph to visualize the network.
+## Function for edge contruction
+```{r echo =F}
+# add taxonomic levels for node based on OTU ids
+source("scripts/edgeConstruct.R")
+```
+
+
+# 3. Sum the abundance of microbes in a same module
+```{r}
+# Shogun species abundance in 1152 subjects
+species = read.table("../microbiome_features/Species_subject copy.txt",head=T,row.names=1, as.is=T,comment.char = "!",sep="\t",check.names = F)
+# species-genus
+species.genus = data.frame(species = rownames(species),genus = sapply(rownames(species), function(x) unlist(strsplit(x, " "))[1]), stringsAsFactors = F)
+
+# load species relative abuundance
+load("~/Dropbox/1.project/iMSMS_round2_metagenomics/rdata/taxa.list.rel.rda")
+species.abun = taxa.list.rel[[6]]
+species.abun$abun = apply(species.abun, 1, mean)
+
+source("~/Dropbox/1.project/iMSMS_round2/scripts/linear_regression.R")
+source("~/Dropbox/1.project/iMSMS_round2/scripts/linear_regression_plot.R")
+load("~/Dropbox/1.project/iMSMS_round2_metagenomics/rdata/seqmeta1152.rda")
+
+# read the Sparcc modules
+method = "spearman"
+modules = read.csv(paste("sparCC/All_samples/otu_table_", method, "_membership0.5/module-membership.tsv",sep=""),sep="\t", head=F,as.is=T)
+colnames(modules) = c("species","module")
+
+modules= split(modules, f = modules$module)
+module.abun = lapply(modules, function(x){
+  y = colSums(species[rownames(species) %in% x$species, ])
+  names(y) = colnames(species)
+  y
+  })
+names(module.abun) = names(modules)
+module.abunall = do.call("rbind", module.abun)
+module.abun.rel = sweep(module.abunall, 2, colSums(module.abunall), `/`)
+
+# remove the species without module
+module.abunall = module.abunall[-1, ]
+module.abun.rel= module.abun.rel[-1, ]
+
+# linear regression
+metares = linear_regression(rel.data = module.abun.rel,arcsin.transform =T, filter =F, fixed.var = c("disease","sex", "age", "bmi"),levels =c( "Control", "MS"),house.adjust = T, site =T, condition = seqmeta1152, taxa = "species", out.file =paste("Linear_coefficient_metagenomics_", method, "_module_species_sex_age_bmi_fixed_house_site_random.xlsx",sep=""))
+
+disease.cols = c(Control = "#74add1",MS= "#a50026")
+signres = linear_regression_plot(metares, taxa = "species", disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file = paste("Linear_coefficient_metagenomics_", method, "_module_species_sex_age_bmi_fixed_house_site_random.pdf",sep=""),width =8,height = 6,taxaname = F, padjust = T)
+```
+
+#4. Read module network
+```{r}
+network = read.csv("~/Dropbox/1.project/iMSMS_round2_metagenomics/results/WOL_shogun/microbiome_network/sparCC/All_samples/otu_table_spearman_correls/pairwise_comparisons.tsv", head=T, sep ="\t")
+
+colnames(network)[1:2] = c("from", "to")
+network.filter = network[abs(network$r) >= 0.6 & network$p_adjusted < 0.05, ]
+colnames(network.filter)[1:2] = c("from", "to")
+
+module = modules[c("module_13", "module_77", "module_115", "module_156", "module_1", "module_10", "module_31", "module_7","module_38", "module_36")]
+
+moduleConstruct = function(data = network, module =NULL, method ="q2scnic", filter =FALSE, connected =TRUE, cluster.size =4, otutaxonomy = species.genus, directed =FALSE, mode = "all", centrality = "betweenness", vertex.size = c("abundance", "centrality"),species.abun = species.abun, vertex.fold = 1000,  index, width =12, height = 6, family.num =10){
+  if(!require("igraph")){
+    install.packages("igraph")
+  }
+
+  moduleall =do.call("rbind", module)
+ 
+   # color by genus level
+   gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+  }
+   module.genus= otutaxonomy[match(moduleall$species,rownames(otutaxonomy)), ]
+ 
+  colrs = gg_color_hue(length(unique(module.genus$genus)))
+  f.colrs = colrs
+  names(colrs) = unique(module.genus$genus)
+  module.genus$cols = colrs[match(module.genus$genus,names(colrs))]
+  module.genus = merge(module.genus, moduleall, by ="species")
+  
+  # build network
+  grn = graph.data.frame(data[,c("from","to")],directed =directed)
+  grn = lapply(module, function(x){
+    x = x[x$species %in% names(V(grn)),]
+    grn = subgraph(grn, v = as.character(x$species))
+    if(vertex.size == "centrality"){
+    mode = match.arg(mode,  c("all", "in", "out","total"))
+  if(centrality == "degree"){
+    centrality.score  = igraph::degree(grn, mode = mode,normalized = TRUE)
+  }
+  if(centrality == "closeness"){
+    centrality.score = igraph::closeness(grn,mode= mode, normalized= TRUE )
+  }
+  if(centrality == "betweenness"){
+    centrality.score = igraph::betweenness(grn,normalized =TRUE)
+  }
+  V(grn)$size = centrality.score*vertex.fold
+  }else{
+    V(grn)$size = species.abun[match(names(V(grn)), rownames(species.abun)),"abun"]*vertex.fold
+  }
+    V(grn)$color = module.genus[match(names(V(grn)), module.genus$species), "cols"]
+    grn
+  })
+ 
+  # layouts = grep("^layout_",ls("package:igraph"), value=TRUE)[-1]
+  # layouts = layouts[!grepl("bipartite|merge|norm|sugiyama|tree",layouts)]
+  # par(mfrow=c(3,3), mar=c(1,1,1,1))
+  # for(layout in layouts){
+  #   print(layout)
+  #   l = do.call(layout, list(grn))
+  #    plot(grn,vertex.label = NA, vertex.frame.color = NA, layout = l, main = layout)
+  # }
+  if(is.null(module)){
+    pdf(file = paste(index, "_OTU_network.pdf",sep=""), width =width, height =height, useDingbats = F)
+    
+  }
+
+  #l = do.call("layout_nicely", list(grn))
+ # grn= grn[-c(4,9)]
+  par(mfrow=c(5,2), mar= c(1,1,1,10), xpd =T)
+  for(name in names(grn)){
+   l = do.call("layout_components", list(grn[[name]]))
+  plot(grn[[name]], vertex.label.dist= 1,vertex.label.font =3, vertex.frame.color = NA, layout = l,vertex.color = adjustcolor(V(grn[[name]])$color, alpha.f = .85))
+  #legend("bottom", unique(module.genus[module.genus$module == name, "genus"]), pch=21,col="#777777", pt.bg=colrs, pt.cex=2, cex=.7, bty="n", ncol=1,text.font =3)
+  }
+}
+
+```
+
+
+## 4.1 Edge contruction
+```{r}
+load("rdata/otutaxonomy.rda")
+file = "results/8.Network/q2-SCNIC/sparCC/groups/disease_course/otu_abundance_Control/otu_table_sparCC_net.modules/network.gml default edge.csv"
+edge = edgeContruct(otutaxonomy = otutaxonomy, edge.file = file, index = "Control", method ="q2scnic",fromGml = F)
+```
+
+## 4.2 Modules by q2-SCNIC
+```{r}
+#nodes
+nodes = read.csv("results/8.Network/q2-SCNIC/sparCC/groups/disease_course/otu_abundance_Control/otu_table_sparCC_net.modules/network.gml default node.csv", head=T,as.is=T)
+
+nodes$module = gsub("m;o;d;u;l;e;_;", "module_", nodes$module)
+nodes$module = gsub(";", ";module_", nodes$module)
+nodes = nodes[nodes$module != "", ]
+
+require(tidyr)
+nodes = separate_rows(nodes, module, sep = ";")
+modules = split(nodes, f = nodes$module)
+modules = lapply(modules, unique)
+```
+
+#5. Network correlation ~ edges
+```{r}
+network.ms = read.csv("~/Dropbox/1.project/iMSMS_round2_metagenomics/results/WOL_shogun/microbiome_network/results/sparCC/MS/otu_table_sparCC_correls/pairwise_comparisons.tsv", head=T, sep ="\t")
+network.hc = read.csv("~/Dropbox/1.project/iMSMS_round2_metagenomics/results/WOL_shogun/microbiome_network/results/sparCC/Control/otu_table_sparCC_correls/pairwise_comparisons.tsv", head=T, sep ="\t")
+
+# density plot correlation 
+cor.ms = data.frame(r = network.ms$r, disease = "MS",stringsAsFactors = F)
+cor.hc = data.frame(r = network.hc$r, disease = "HHC", stringsAsFactors = F)
+cors = rbind(cor.ms, cor.hc)
+
+library(plyr)
+mu <- ddply(cors, "disease", summarise, grp.mean=median(r))
+
+ggplot(cors, aes(x = r, color = disease)) + 
+  geom_density() + 
+  scale_color_manual(values = disease.cols) + 
+  xlab("Spearman correlation") +
+  geom_vline(data=mu, aes(xintercept=grp.mean, color=disease),
+           linetype="dashed")
+
+```
+
+
+## 5.1 Partial correlation to check the confunding effect of covariates (use age and sex, bmi as an example)
+```{r}
+# loading sparcc with 100 permutations
+files = list.files(path = "results/SpiecEasi_sparcc/rdata/species_treatment/", full.names = T)
+lapply(files,load,.GlobalEnv)
+load("results/SpiecEasi_sparcc/rdata/species.treatment.rda")
+
+species.sparcc = list(hc.off= species.hc.off.pval, ms.off=species.ms.off.pval, hc.treated = species.hc.treated.pval, ms.treated = species.ms.treated.pval)
+# remove the edges with low correlation
+species.sparcc.filter = lapply(species.sparcc,function(x){
+  y = x[abs(x$r) >= 0.4,]
+  y
+})
+
+# adjust correlation by age, sex and bmi
+library("corpcor")
+group.names = names(species.sparcc)
+species.sparcc.adj = species.sparcc 
+rownames(seqmeta)  = gsub("[.]", "-", rownames(seqmeta))
+ 
+for(group in group.names){
+  species= species.treatment[[group]]
+ 
+  species.meta = merge(t(species), seqmeta, by = "row.names")
+  species.meta$sex = ifelse(species.meta$sex == "F", 1, 2)
+  sparcc = species.sparcc.adj[[group]]
+  sparcc$from = as.character(sparcc$from)
+  sparcc$to = as.character(sparcc$to)
+  
+  for(i in 1:nrow(sparcc)){
+    cor=matrix(NA,5,5)
+    colnames(cor)= row.names(cor) = c(sparcc$from[i],sparcc$to[i],"age","sex","bmi")
+    diag(cor) = 1
+    cor[2,1]= sparcc$r[i] #correlation coefficient of correlation between species1 and species2
+    cor[3,1]=cor.test(species.meta[,sparcc$from[i]],species.meta$age,method = "pearson")$estimate #correlation coefficient of correlation between species1 and age
+    cor[4,1]=cor.test(species.meta[,sparcc$from[i]],species.meta$sex,method = "pearson")$estimate #correlation coefficient of correlation between species1 and sex
+    cor[5,1]=cor.test(species.meta[,sparcc$from[i]],species.meta$bmi,method = "pearson")$estimate #correlation coefficient of correlation between species1 and bmi
+    
+    cor[3,2]=cor.test(species.meta[,sparcc$to[i]],species.meta$age,method = "pearson")$estimate #correlation coefficient of correlation between species2 and age
+    cor[4,2]=cor.test(species.meta[,sparcc$to[i]],species.meta$sex,method = "pearson")$estimate #correlation coefficient of correlation between species2 and sex
+    cor[5,2]=cor.test(species.meta[,sparcc$to[i]],species.meta$bmi,method = "pearson")$estimate #correlation coefficient of correlation between species2 and bmi
+    
+    cor[4,3]=cor.test(species.meta$age,species.meta$sex,method = "pearson")$estimate #correlation coefficient of correlation between age and sex
+    cor[5,4]=cor.test(species.meta$bmi,species.meta$sex,method = "pearson")$estimate #correlation coefficient of correlation between bmi and sex
+    cor[5,3]=cor.test(species.meta$bmi,species.meta$age,method = "pearson")$estimate #correlation coefficient of correlation between bmi and age
+    
+    cor[upper.tri(cor)]=cor[lower.tri(cor)]
+    cor_partial_rm_age_sex=cor2pcor(cor)[2,1] #partial correlation coefficient of correlation between species1 and species2 after adjusting age and sex
+    species.sparcc.adj[[group]]$adj_r[i] = cor_partial_rm_age_sex
+  }
+}
+
+species.sparcc.adj = lapply(species.sparcc.adj,function(x){
+colnames(x)[3] = "unadj_r"
+colnames(x)[6] = "r"
+x
+})
+
+```
+
+
+
+## 5.2 denstiy plot the network parameters
+```{r}
+#connected, TRUE means keep the largest connected network only
+# plot the corrrelation ~ edges/centrality
+r.values = seq(0,1, by =0.1)
+library("igraph", quietly =TRUE,warn.conflicts=FALSE)
+
+# networCorrelation function
+source("scripts/networkCorrelation.R")
+
+# for untreated HHC and MS
+data=  lapply(r.values[-1] , function(x) networkCorrelation(control = species.sparcc.adj$hc.off, ms =species.sparcc.adj$ms.off , correlation = x, net.method ="sparcc"))
+data.untreated  = do.call("rbind",data)
+
+# for treated HHC and MS
+data =  lapply(r.values[-1] , function(x) networkCorrelation(control = species.sparcc.adj$hc.treated, ms =species.sparcc.adj$ms.treated, correlation = x, net.method ="sparcc"))
+data.treated = do.call("rbind",data)
+
+data = data.untreated
+# data = data.treated
+
+g1 = ggplot(data, aes(x = r, y = node, color = disease)) + 
+  geom_point() + 
+  geom_line() +
+  scale_color_manual(values = disease.cols) + 
+  xlab("|SparCC correlation|")  
+
+g2 = ggplot(data, aes(x = r, y = edge, color = disease)) + 
+  geom_point() + 
+  geom_line() +
+  scale_color_manual(values = disease.cols) + 
+  xlab("|SparCC correlation|")
+
+g3 = ggplot(data, aes(x = r, y = betweenness, color = disease)) + 
+  geom_point() + 
+  geom_line() +
+  scale_color_manual(values = disease.cols) + 
+  xlab("|SparCC correlation|")  
+
+g4 = ggplot(data, aes(x = r, y = degree, color = disease)) + 
+  geom_point() + 
+  geom_line() +
+  scale_color_manual(values = disease.cols) + 
+  xlab("|SparCC correlation|") 
+
+g5 = ggplot(data, aes(x = r, y =closeness, color = disease)) + 
+  geom_point() + 
+  geom_line() +
+  scale_color_manual(values = disease.cols) + 
+  xlab("|SparCC correlation|") 
+# sparcc correlation distribution (for untreated and treated samples)
+cor.ms = data.frame(r = species.sparcc.adj$ms.treated$r, disease = "MS",stringsAsFactors = F)
+cor.hc = data.frame(r = species.sparcc.adj$hc.treated$r, disease = "HHC", stringsAsFactors = F)
+cors = rbind(cor.ms, cor.hc)
+cors = cors[abs(cors$r) >= 0.1, ]
+
+ 
+library(plyr)
+mu <- ddply(cors, "disease", summarise, grp.mean=median(r))
+
+g6 = ggplot(cors, aes(x = r, color = disease)) + 
+  geom_density() + 
+  scale_color_manual(values = disease.cols) + 
+  xlab("|SparCC correlation|")
+require(gridExtra)
+grid.arrange(g6,g1,g2,g3,g4,g5, nrow =2)
+
+dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/SparCC_network_distribution.pdf", width =13, height =6)
+
+grid.arrange(g6,g3,g5, nrow =1)
+dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/SparCC_network_distribution_simply.pdf", width =13, height =3)
+```
+
+## 5.3 Function to construct network
+```{r}
+linkage =read.csv("~/Dropbox/1.project/iMSMS_round2_metagenomics/data/annotation/taxonomy/new_taxdump/shogun_species_linkage.txt", sep="\t",head=F,as.is = T)
+linkage = linkage[,seq(1,20,by =2)]
+colnames(linkage) = c("taxonomyid", "strain","species","genus","family", "order","class", "phylum", "kingdom","bacteria")
+
+for(i in 1:nrow(species.genus)){
+  species.genus$family[i] = linkage[match(species.genus$genus[i], linkage$genus), "family"]
+  species.genus$order[i] = linkage[match(species.genus$family[i], linkage$family), "order"]
+  species.genus$phylum[i] = linkage[match(species.genus$genus[i], linkage$genus), "phylum"]
+}
+
+# species related pathway (humann2 and SPOKE)
+load("results/SpiecEasi_sparcc/rdata/species.pathway.rda")
+species.pathway = species.pathway[!species.pathway$pathway %in% c("UNMAPPED","UNINTEGRATED"),]
+species.pathway$pathwayid = sapply(species.pathway$pathway, function(x){unlist(strsplit(x,"[:]"))[1]})
+# read metacyc hier 
+spoke.nodes = read.csv("results/SpiecEasi_sparcc/rdata/spoke_microbe_download/debug_combine_nodes_after_hierarchy.csv",head=T,as.is=T)
+ 
+spoke.edges = read.csv("results/SpiecEasi_sparcc/rdata/spoke_microbe_download/debug_combine_edges_after_hierarchy.csv", head=T,as.is=T)
+ spoke.edges.orgtopwy = spoke.edges[spoke.edges$edgetype == "orgtopwy",]
+ spoke.edges.pwyhier = spoke.edges[spoke.edges$edgetype == "pwyhier", ]
+ colnames(spoke.edges.pwyhier)[2:3] =c("pwy2","target")
+ 
+ 
+ spoke.edges.orgtopwy = merge(spoke.edges.orgtopwy,spoke.edges.pwyhier[,c("target", "pwy2")],by ="target")
+ colnames(spoke.edges.orgtopwy) = c("pwyid","edgetype","speciesid", "pwy2id")
+ spoke.edges.orgtopwynames = spoke.edges.orgtopwy
+ 
+ spoke.nodes.type = split(spoke.nodes, spoke.nodes$type)
+ colnames(spoke.nodes.type[["org"]])[1:2] = c("species", "speciesid")
+ colnames(spoke.nodes.type[["pwy"]])[1:2] = c("pwy", "pwyid")
+  colnames(spoke.nodes.type[["pwyhier"]])[1:2] = c("pwy2", "pwy2id")
+ 
+ 
+  spoke.edges.orgtopwynames  =merge( spoke.edges.orgtopwynames , spoke.nodes.type[["org"]][,1:2], by = "speciesid")
+  spoke.edges.orgtopwynames  =merge( spoke.edges.orgtopwynames , spoke.nodes.type[["pwy"]][,1:2], by = "pwyid")
+  spoke.edges.orgtopwynames  =merge( spoke.edges.orgtopwynames , spoke.nodes.type[["pwyhier"]][,1:2], by = "pwy2id")
+  spoke.edges.orgtopwynames$species.simply = sapply(spoke.edges.orgtopwynames$species,function(x){
+    y = paste(unlist(strsplit(x, " "))[1:2],collapse =" ")
+    y
+  })
+  
+  species.pathway = species.pathway2
+  colnames(species.pathway)[c(3,4,5)] =c("pwyname","pwyid", "pwy2id")
+  species.pathway2 = merge(species.pathway, unique(spoke.edges.orgtopwynames[,c("pwyid", "pwy", "pwy2")]), by = "pwyid")
+  
+  species2pathway= unique(rbind(species.pathway2[,c("species", "pwy", "pwy2")], spoke.edges.orgtopwynames[,c("species", "pwy", "pwy2")]))
+  species2pathway$species.simply = sapply(species2pathway$species, function(x){
+    paste(unlist(strsplit(x, " "))[1:2], collapse = " ")
+  })
+  
+  species2pathway= species2pathway[!is.na(species2pathway$species),]
+  
+ 
+# Construct the network
+source("scripts/netConstruct.R")
+grn.sparcc= lapply(species.sparcc.adj, function(x){
+  y = netConstruct(data = x,correlation = 0.4,adjacency = F)
+  y
+})
+grn.sparcc.neg = lapply(grn.sparcc, function(x){
+  delete.edges(x, which(E(x)$weight > 0))
+})
+grn.sparcc.pos = lapply(grn.sparcc, function(x){
+  delete.edges(x, which(E(x)$weight < 0))
+}) 
+ 
+ require(VennDiagram)
+# compare untreated with control or treated with control
+ temp = venn.diagram(list(HHC = names(V(grn.sparcc$hc.off)), MS.untreated = names(V(grn.sparcc$ms.off))),filename = NULL, fill = disease.cols, alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+ 
+ require(grDevicees)
+ pdf(file = "results/SpiecEasi_sparcc/species_treatment/untreated/Sparcc_venndiagram.pdf")
+ grid.draw(temp)
+ dev.off()
+ 
+ # plot edges
+ a = species.sparcc.adj$hc.off
+ b = species.sparcc.adj$ms.off
+ a = a[abs(a$r) >= 0.4, ]
+ b = b[abs(b$r) >= 0.4, ]
+ a = a[a$from %in% names(V(grn.sparcc$hc.off)) &  a$to %in% names(V(grn.sparcc$hc.off)) , ]
+ b = b[b$from %in% names(V(grn.sparcc$ms.off)) &  b$to %in% names(V(grn.sparcc$ms.off)) , ]
+ 
+  temp = venn.diagram(list(HHC = paste(a$from, a$to,sep="-"), MS.untreated =  paste(b$from,b$to,sep="-")), filename =NULL, fill = disease.cols, alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+ 
+ pdf("results/SpiecEasi_sparcc/species_treatment/untreated/Sparcc_venndiagram_shared_edges.pdf")
+ grid.draw(temp)
+ dev.off()
+ 
+ # compare all four groups
+  venn.diagram(list(HHC.treated = names(V(grn.sparcc$hc.treated)), MS.treated = names(V(grn.sparcc$ms.treated)), HHC.untreated = names(V(grn.sparcc$hc.off)), MS.untreated = names(V(grn.sparcc$ms.off))), "results/SpiecEasi_sparcc/species_treatment/Sparcc_venndiagram.tiff",  fill= c(disease.cols, disease.cols), alpha =0.5,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+ 
+# plot  HC and MS network
+  source("scripts/grnPlot.R")
+ grnPlot(grn.sparcc$hc.treated,diff.species = NULL)
+ dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/species_HHC_treated_network.pdf",width =9, height =6, useDingbats=F)
+ grnPlot(grn.sparcc$ms.treated,diff.species = NULL)
+ dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/species_MS_treated_network.pdf",width =9, height =6, useDingbats=F)
+ 
+ grn.hc = grn.sparcc$hc.treated
+ grn.ms= grn.sparcc$ms.treated
+ 
+ hc.unique = setdiff(names(V(grn.hc)), names(V(grn.ms)))
+ ms.unique = setdiff(names(V(grn.ms)), names(V(grn.hc)))
+ 
+ ##### difference of edges between grn.hc and grn.ms ####
+ grn.diff.hc = graph.difference(grn.hc, grn.ms)
+ grn.diff.ms = graph.difference(grn.ms, grn.hc)
+ 
+ # different network with unique species only
+ grn.diff.hc2 = subgraph(grn.diff.hc, v = hc.unique)
+ grn.diff.ms2 = subgraph(grn.diff.ms, v = ms.unique)
+ 
+ grnPlot( grn.diff.hc2, diff.species =hc.unique,label = T)
+ dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/species_HHC_treated_unique_species.pdf",width =10, height =6,useDingbats =F)
+ 
+  grnPlot( grn.diff.ms2, diff.species =ms.unique,label = T)
+   dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/species_MS_treated_unique_species.pdf",width =10, height =6,useDingbats =F)
+  grnPlot( grn.diff.hc, diff.species =hc.unique,label = T)
+     dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/species_HHC_treated_unique_edges.pdf",width =10, height =6,useDingbats =F)
+  grnPlot( grn.diff.ms, diff.species =ms.unique,label = T)
+       dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/species_MS_treated_unique_edges.pdf",width =10, height =6,useDingbats =F)
+ 
+ # plot negative related species in HC and MS 
+cluster.size =2
+    cl = clusters(grn.hc.neg)
+    small.clusters = which(cl$csize <= cluster.size)
+    vertices.to.delete = which(cl$membership %in% small.clusters) 
+    grn.hc.neg = delete.vertices(grn.hc.neg, vertices.to.delete)
+        cl = clusters(grn.ms.neg)
+    small.clusters = which(cl$csize <= cluster.size)
+    vertices.to.delete = which(cl$membership %in% small.clusters) 
+    grn.ms.neg = delete.vertices(grn.ms.neg, vertices.to.delete)
+   
+ grn.hc.neg1 = subgraph(grn.hc, v= V(grn.hc.neg)$name)
+  grn.ms.neg1 = subgraph(grn.ms, v= V(grn.ms.neg)$name)
+   centrality.hc = degree(grn.hc.neg1, mode= "all", normalized = T)
+ centrality.ms = degree(grn.ms.neg1, mode= "all", normalized = T)
+ V(grn.hc.neg1)$Size = centrality.hc*200
+ V(grn.ms.neg1)$Size = centrality.ms*200
+
+    ms.neg.unique = setdiff(names(V(grn.ms.neg1)), names(V(grn.hc.neg1))) 
+    hc.neg.unique = setdiff(names(V(grn.hc.neg1)), names(V(grn.ms.neg1)))
+    # some high degree nodes
+    hc.hub = names(centrality.hc[order(centrality.hc, decreasing = T)])[1:5]
+    ms.hub = names(centrality.ms[order(centrality.ms, decreasing = T)])[1:5]
+    
+ grnPlot(grn.hc.neg1, diff.species =V(grn.hc.neg1)$name ,label = T)
+  dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/species_HC_treated_negative_correlation_network.pdf",width =10, height =6)
+  
+ grnPlot(grn.ms.neg1, diff.species =V(grn.ms.neg1)$name,label = T)
+  dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/treated/species_MS_treated_negative_correlation_network.pdf",width =10, height =6)
+ #  Greedy community detection "fast greedy modularity optimization algorithm""
+ c1 = cluster_fast_greedy(grn.hc.pos)
+ plot(c1, grn.hc.pos, vertex.label = NA, vertex.frame.color = NA, layout = layout_with_graphopt(grn.hc.pos), vertex.size =3,edge.color = "black")
+     
+       
+ # pathogen network
+ grn.pathogen = sparcc.ms.filter2[sparcc.ms.filter2$from %in% names | sparcc.ms.filter2$to %in% names, ]
+ grn.pathogen= grn.pathogen[abs(grn.pathogen$r) >= 0.4, ]
+ 
+ probs =order1$species
+  grn.prob = sparcc.hc.filter2[sparcc.hc.filter2$from %in% probs | sparcc.hc.filter2$to %in% probs, ]
+ grn.prob =  grn.prob[abs( grn.prob$r) >= 0.4, ]
+ 
+```
+
+## 5.4 Betweenness comparison
+```{r}
+grn.hc = grn.sparcc.specific$hc.off
+E(grn.hc)$weight = NA
+grn.ms = grn.sparcc.specific$ms.off
+E(grn.ms)$weight= NA
+
+hc.centrality = betweenness(grn.hc ,normalized = T)
+ms.centrality = betweenness(grn.ms ,normalized = T)
+hc.centrality = data.frame(species= names(hc.centrality), centrality = hc.centrality,disease ="Control",stringsAsFactors = F)
+ms.centrality = data.frame(species = names(ms.centrality), centrality = ms.centrality,disease ="MS",stringsAsFactors = F)
+centr = rbind(hc.centrality, ms.centrality)
+
+disease.cols = c(Control = "#74add1",MS= "#a50026"); 
+
+# get the species specific for HC or MS
+centrality= merge(hc.centrality, ms.centrality, by = "species", all =T)
+ 
+hc.centrality.unique = centrality[is.na(centrality$centrality.y),]
+ms.centrality.unique = centrality[is.na(centrality$centrality.x),]
+
+# or get the species in HC or MS network
+hc.centrality.unique = centrality[!is.na(centrality$centrality.x),]
+ms.centrality.unique = centrality[!is.na(centrality$centrality.y),]
+ 
+# add a pseudo number
+hc.centrality.unique[hc.centrality.unique$centrality.x ==0, "centrality.x"] = min(hc.centrality.unique$centrality.x[hc.centrality.unique$centrality.x != 0])/2
+ms.centrality.unique[ms.centrality.unique$centrality.y ==0, "centrality.y"] = min(ms.centrality.unique$centrality.y[ms.centrality.unique$centrality.y != 0])/2
+
+
+
+############ read the differential species in HC and MS
+library(gdata)
+
+####### all MS vs HHC
+diff.species  =read.xls("../Linear_regression/disease/all/Linear_coefficient_metagenomics_species_MS_all_sex_age_bmi_fixed_house_site_random.xlsx",sheet =1 ,head=T,as.is=T)
+diff.species =diff.species[diff.species$fdr_diseaseMS < 0.05,]
+diff.species.hc = diff.species[diff.species$Coef_diseaseMS < 0, "taxonomy"]
+diff.species.ms = diff.species[diff.species$Coef_diseaseMS > 0, "taxonomy"]
+intersect(diff.species.hc, hc.centrality.unique$species)
+intersect(diff.species.ms, ms.centrality.unique$species)
+
+######### treated MS vs HHC
+diff.species.treated =read.xls("../Linear_regression/disease/all/Linear_coefficient_metagenomics_species_treated_all_sex_age_bmi_fixed_house_site_random.xlsx",sheet =1 ,head=T,as.is=T)
+diff.species.treated =diff.species.treated[diff.species.treated$fdr_diseaseMS < 0.05,]
+diff.species.treated.hc = diff.species.treated[diff.species.treated$Coef_diseaseMS < 0, "taxonomy"]
+diff.species.treated.ms = diff.species.treated[diff.species.treated$Coef_diseaseMS > 0, "taxonomy"]
+intersect(diff.species.treated.hc, hc.centrality.unique$species)
+intersect(diff.species.treated.ms, ms.centrality.unique$species)
+
+####### Untreated MS vs HHC
+diff.species.untreated =read.xls("../Linear_regression/disease/all/Linear_coefficient_metagenomics_species_MS-untreated_all_sex_age_bmi_fixed_house_site_random.xlsx",sheet =1 ,head=T,as.is=T)
+diff.species.untreated =diff.species.untreated[diff.species.untreated$fdr_diseaseMS < 0.05,]
+
+diff.species.untreated.hc = diff.species.untreated[diff.species.untreated$Coef_diseaseMS < 0, "taxonomy"]
+diff.species.untreated.ms = diff.species.untreated[diff.species.untreated$Coef_diseaseMS > 0, "taxonomy"]
+
+same.hc = intersect(diff.species.untreated.hc, hc.centrality.unique$species)
+same.ms = intersect(diff.species.untreated.ms, ms.centrality.unique$species)
+############
+
+# find the species linkage
+hc.centrality.unique = merge(hc.centrality.unique, species.genus, by = "species")
+ms.centrality.unique = merge(ms.centrality.unique, species.genus, by = "species")
+
+
+# find the pathway linkage
+hc.centrality.unique$species.simply =  sapply(hc.centrality.unique$species,function(x){
+  y = paste(unlist(strsplit(x, " "))[c(1,2)],collapse = " ")
+  y
+})
+hc.centrality.unique = merge(hc.centrality.unique, unique(species2pathway[,-1]), by = "species.simply")
+ 
+
+ms.centrality.unique$species.simply = sapply(ms.centrality.unique$species,function(x){
+  y = paste(unlist(strsplit(x, " "))[c(1,2)],collapse = " ")
+  y
+})
+ms.centrality.unique = merge(ms.centrality.unique, unique(species2pathway[,-1]), by = "species.simply")
+ ### compare the pwy of hc and MS
+ms.centrality.unique.pwy = ms.centrality.unique[ms.centrality.unique$pwy %in% setdiff(ms.centrality.unique$pwy, hc.centrality.unique$pwy),]
+hc.centrality.unique.pwy = hc.centrality.unique[hc.centrality.unique$pwy %in% setdiff(hc.centrality.unique$pwy, ms.centrality.unique$pwy),]
+
+# Sankey Diagram
+library("networkD3")
+library(dplyr)
+library("rbokeh")
+
+sankeyDiagram = function(centrality = hc.centrality.unique,disease ="Control", height= 500, type = "species", pwy.level = "level2"){
+  if(type == "species"){
+    if(disease == "Control"){
+    links <- data.frame(
+    source= c(centrality$species, centrality$genus),
+    target=c(centrality$genus, centrality$phylum),
+    value= c(centrality$centrality.x,centrality$centrality.x)
+  )
+  }else{
+    links <- data.frame(
+    source= c(centrality$species, centrality$genus),
+    target=c(centrality$genus, centrality$phylum),
+    value= c(centrality$centrality.y,centrality$centrality.y)
+  )
+  }
+    }else if(type== "pathway"){
+     if(disease == "Control"){
+       if(pwy.level =="level2"){
+      source= c(centrality$species.simply, centrality$pwy)
+    target=c(centrality$pwy, centrality$pwy2)
+       }
+       else{
+    source= c(centrality$species.simply)
+    target=c(centrality$pwy2)
+     }
+    links <- data.frame(
+      source = source,
+      target = target,
+    value= c(centrality$centrality.x,centrality$centrality.x)
+    #value= c(centrality$centrality.x)
+  )
+  }else{
+    if(pwy.level == "level2"){
+         source= c(centrality$species, centrality$pwy)
+    target=c(centrality$pwy, centrality$pwy2)
+    }else{
+        source= c(centrality$species.simply)
+    target=c(centrality$pwy2)
+    }
+    links <- data.frame(
+      source = source,
+      target = target,
+    value= c(centrality$centrality.y,centrality$centrality.y)
+    #value= c(centrality$centrality.y)
+  )
+  }
+  }
+  links = links[!is.na(links$target),]
+  # From these flows we need to create a node data frame: it lists every entities involved in the flow
+  nodes <- data.frame(
+    name=c(as.character(links$source), 
+           as.character(links$target)) %>% unique()
+  )
+  
+  # With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+  links$IDsource <- match(links$source, nodes$name)-1 
+  links$IDtarget <- match(links$target, nodes$name)-1
+  
+  # Make the Network
+  p <- sankeyNetwork(Links = links, Nodes = nodes,
+                     Source = "IDsource", Target = "IDtarget",
+                     Value = "value", NodeID = "name", 
+                     sinksRight=FALSE,height =height)
+  p
+}
+
+# species linkage
+p = sankeyDiagram(centrality = hc.centrality.unique[!is.na(hc.centrality.unique$phylum),],disease ="Control", height= 500)
+
+saveWidget(p, file=paste0( getwd(), "MS_treated_unique_species_sankey_diagram.html"))
+# pathway linkage
+p = sankeyDiagram(centrality = unique(hc.centrality.unique[!is.na(hc.centrality.unique$pwy2),-7]),disease ="Control", height= 500,type= "pathway", pwy.level = "level3")
+
+p = sankeyDiagram(centrality = ms.centrality.unique.pwy,disease ="MS", height= 500,type= "pathway", pwy.level = "level2")
+
+# get the species with largest change of betweenness or 
+centrality = merge(hc.centrality, ms.centrality, all =T, by = "species")
+centrality$difference= centrality$disease.y - centrality$disease.x
+
+
+ggplot(centr, aes(x = species, y = centrality,fill = disease)) + geom_bar(stat="identity", color="black", position=position_dodge())  + scale_fill_manual(values = disease.cols)+ coord_flip() + ylab("Betweenness centrality") + xlab("")
+```
+
+
+
+## 5.5.Cohort-specific edges selection based on correlation coefficients
+```{r}
+TE= unlist(lapply(species.sparcc.adj,function(x) x$r))
+
+IQR=quantile(TE,na.rm = T)[4]-quantile(TE,na.rm = T)[2] #TE represents coefficient of certain edge in four groups
+
+if(any(TE<quantile(TE,na.rm = T)[2]-2*IQR)|any(TE>quantile(TE,na.rm = T)[4]+2*IQR)){
+  species.sparcc.specific= lapply(species.sparcc.adj,function(x){
+       y= x[c(which(x$r <quantile(TE,na.rm = T)[2]-2*IQR),which(x$r >quantile(TE,na.rm = T)[4]+2*IQR)),]
+       y
+  })
+} 
+# build network for group specific microbe
+grn.sparcc.specific = lapply(species.sparcc.specific, function(x){
+  y = netConstruct(data = x,correlation = 0.4,adjacency = F)
+  y
+})
+grn.sparcc.specific.neg = lapply(grn.sparcc.specific, function(x){
+  delete.edges(x, which(E(x)$weight > 0))
+})
+grn.sparcc.specific.pos = lapply(grn.sparcc.specific, function(x){
+  delete.edges(x, which(E(x)$weight < 0))
+}) 
+ 
+ require(VennDiagram)
+# compare untreated with control or treated with control
+ temp = venn.diagram(list(HHC = names(V(grn.sparcc.specific$hc.off)), MS.treated = names(V(grn.sparcc.specific$ms.off))), filename = NULL, fill = disease.cols, alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+ pdf("results/SpiecEasi_sparcc/species_treatment/untreated/group_specific/Sparcc_venndiagram.pdf")
+ grid.draw(temp)
+ dev.off()
+ 
+ # comapare with differential species in MS
+ mssign =read.xlsx("../Linear_regression/Linear_filter_variance/disease_course/Linear_coefficient_metagenomics_species_UntreadMS_HHC__sex_age_bmi_fixed_house_site_random.xlsx",head=T,as.is=T,sheet =1)
+ mssign = diffms[diffms$fdr_diseaseMS < 0.05, ]
+  temp = venn.diagram(list(HHC = names(V(grn.sparcc.specific$hc.off)), MS.untreated = names(V(grn.sparcc.specific$ms.off)), diff = ms.sign$taxonomy), filename = NULL, fill = c(disease.cols, diff = "orange"), alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+ pdf("results/SpiecEasi_sparcc/species_treatment/untreated/group_specific/Sparcc_venndiagram_with_differential_species.pdf")
+ grid.draw(temp)
+ dev.off()
+ 
+ # edges
+ a = species.sparcc.specific$hc.off
+ b = species.sparcc.specific$ms.off
+
+ a = a[a$from %in% names(V(grn.sparcc.specific$hc.off)) &  a$to %in% names(V(grn.sparcc.specific$hc.off)) , ]
+ b = b[b$from %in% names(V(grn.sparcc.specific$ms.off)) &  b$to %in% names(V(grn.sparcc.specific$ms.off)) , ]
+ 
+  temp = venn.diagram(list(HHC = paste(a$from, a$to,sep="-"), MS.untreated =  paste(b$from,b$to,sep="-")), filename =NULL, fill = disease.cols, alpha = 0.50,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+ 
+ pdf("results/SpiecEasi_sparcc/species_treatment/untreated/group_specific/Sparcc_venndiagram_shared_edges.pdf")
+ grid.draw(temp)
+ dev.off()
+ 
+ 
+ # compare all four groups
+  venn.diagram(list(HHC.treated = names(V(grn.sparcc.specific$hc.treated)), MS.treated = names(V(grn.sparcc.specific$ms.treated)), HHC.untreated = names(V(grn.sparcc.specific$hc.off)), MS.untreated = names(V(grn.sparcc.specific$ms.off))), "results/SpiecEasi_sparcc/species_treatment/Group_specific_species_sparcc_venndiagram.tiff",  fill= c(disease.cols, disease.cols), alpha =0.5,cex = 1.5, cat.cex = 1, cat.fontface = 2,cat.dist = 0.09,margin = 0.1,lty = "dotted",col = "black",lwd = 1.5)
+ 
+# plot  HC and MS network
+  source("scripts/grnPlot.R")
+ grnPlot(grn.sparcc.specific$hc.off,diff.species = NULL)
+ dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/untreated/group_specific/species_HHC_off_network.pdf",width =9, height =6, useDingbats=F)
+ 
+ grnPlot(grn.sparcc.specific$hc.off,diff.species =V(grn.sparcc.specific$hc.off)$name,label = T)
+  dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/untreated/group_specific/species_HHC_off_network_labled.pdf",width =9, height =6, useDingbats=F)
+  
+  # label the different species between HC and MS
+   diff.hc = setdiff(V(grn.sparcc.specific$hc.off)$name, V(grn.sparcc.specific$ms.off)$name)
+   grnPlot(grn.sparcc.specific$hc.off,diff.species =diff.hc,label = T)
+  dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/untreated/group_specific/species_HHC_off_network_labled_diff.pdf",width =9, height =6, useDingbats=F)
+   
+   
+ # MS
+ grnPlot(grn.sparcc.specific$ms.off,diff.species = NULL)
+ dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/untreated/group_specific/species_MS_off_network.pdf",width =9, height =6, useDingbats=F)
+  grnPlot(grn.sparcc.specific$ms.off,diff.species = V(grn.sparcc.specific$ms.off)$name, label = T)
+ dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/untreated/group_specific/species_MS_off_network_labled.pdf",width =9, height =6, useDingbats=F)
+ 
+  diff.ms = setdiff( V(grn.sparcc.specific$ms.off)$name,V(grn.sparcc.specific$hc.off)$name)
+ grnPlot(grn.sparcc.specific$ms.off,diff.species = diff.ms, label = T)
+ dev.copy2pdf(file = "results/SpiecEasi_sparcc/species_treatment/untreated/group_specific/species_MS_off_network_labled_diff.pdf",width =9, height =6, useDingbats=F)
+ 
+ ### find modules in the specific network
+ module.identify = function(g = grn.sparcc.specific$hc.off,index = "HHC_untreated", method = c("walktrap", "fast_greedy", "edge_betweenness")){
+   if(method == "walktrap"){
+      wtc <- cluster_walktrap(g)
+   }else if(method== "fast_greedy"){
+     wtc <- cluster_fast_greedy(g)
+   }else{
+     wtc <- cluster_edge_betweenness(g)
+   }
+    members = membership(wtc)
+    members = data.frame(species = names(members), module = as.numeric(members))
+    members = members[order(members$module),]
+    colnames(members)[2] = paste(index,"module", sep="_")
+    members
+ }
+
+ modules1 = lapply(grn.sparcc.specific, module.identify, method= "walktrap")
+  WriteXLS(modules1, "results/SpiecEasi_sparcc/Module/walk_random/Microbial_community_modules_walktrap.xlsx")
+ modules2 = lapply(grn.sparcc.specific, module.identify, method= "fast_greedy")
+  WriteXLS(modules2, "results/SpiecEasi_sparcc/Module/walk_random/Microbial_community_modules_fast_greedy.xlsx")
+   modules3 = lapply(grn.sparcc.specific, module.identify, method= "edge_betweenness")
+  WriteXLS(modules3, "results/SpiecEasi_sparcc/Module/walk_random/Microbial_community_modules_edge_betweenness.xlsx")
+
+```
+
+# 6. Network by Site and Disease
+load("rdata/taxaverage.rda")
+load("rdata/condpair.rda")
+dataGroup(otu = taxaverage[[6]], meta = condpair, group = "Site")
+
+```{r warning=FALSE}
+dataGroup = function(otu = taxaverage[[6]], meta = condpair, group = "Site"){
+  options(warn=-1)
+  cond =split(meta, f = meta[,group])
+  
+  group.abun = lapply(cond, function(z){
+    out = otu[, colnames(otu) %in% gsub("[.]","_", rownames(z))]
+    out = out[rowSums(out) > 0, ]
+    out
+  })
+  for(i in 1:length(group.abun)){
+    name = names(group.abun)[i]
+    group.abun[[i]]$OTU_ID = rownames(group.abun[[i]])
+    group.abun[[i]] = group.abun[[i]][,c(ncol(group.abun[[i]]), 1:(ncol(group.abun[[i]])-1))]
+    colnames(group.abun[[i]])[1] = "#OTU ID"
+    file = paste("results/Network/q2-SCNIC/otu_abundance_", name,".txt",sep="")
+    cat("# Constructed from biom file", "\n", file = file)
+    write.table(group.abun[[i]], file = file,quote=F,sep="\t",row.names=F, append = T)
+  }
+}
+```
+
+```{bash}
+#scp -r results/8.Network/q2-SCNIC/otu_abundance* xiaoyuanzhou@pass1.compbio.ucsf.edu:/scrapp2/xy/UCSD_microbiome_sequences/network/q2-SCNIC
+
+ssh xiaoyuanzhou@sous.compbio.ucsf.edu
+ls
+cd /scrapp2/xy/UCSD_microbiome_sequences/network/q2-SCNIC
+#biom convert text to biom
+for FILE in *.txt
+do name=$(sed s/.txt/.biom/g <<< $FILE)
+biom convert -i $FILE -o $name --to-hdf5 --table-type="OTU table"
+done
+ls *.biom > biomfile.txt
+
+# running q2-SCINIC, import network.gml into cytoscape
+```
+
+#7. Edge and network construction
+```{r}
+groups = c(c("Female","Male"), unique(condpair$disease_course), "MS", unique(condpair$treatment_status), unique(condpair$Site))
+groups = unique(groups)
+groups = gsub(" ", "", groups)
+
+edge.list = lapply(groups, function(x){
+  file = paste("results/8.Network/q2-SCNIC/sparCC/groups/disease_course/otu_abundance_", x, "/otu_table_sparCC_net.modules/network.gml default edge.csv",sep="")
+  edgeContruct(otutaxonomy = otutaxonomy, edge.file = file, index = x, method = "q2scnic")
+})
+names(edge.list) = groups
+
+grn.list = list()
+for(group in groups){
+  grn.list[[group]] = netConstruct(data =edge.list[[group]],vertex.size = "centrality", abundance = oturelave, otutaxonomy = otutaxonomy, filter = T,centrality ="degree", index = group,vertex.fold = 100,width = 14, family.num = NULL) 
+}
+
+```
+
+#8. Boostrap
+Randomalize the control and MS samples to build the new networks for the centrality test.
+## split data into groups
+```{r}
+dataGroup = function(otu = taxaverage[[6]], meta = condpair, group = "Site", index = 1){
+  options(warn=-1)
+  # randomalize the samples in given group
+  meta = transform(meta, sampling = sample(meta[,group]))
+  cond =split(meta, f = meta[,"sampling"])
+  
+  group.abun = lapply(cond, function(z){
+    out = otu[, colnames(otu) %in% gsub("[.]","_", rownames(z))]
+    out = out[rowSums(out) > 0, ]
+    out
+  })
+  for(i in 1:length(group.abun)){
+    name = names(group.abun)[i]
+    group.abun[[i]]$OTU_ID = rownames(group.abun[[i]])
+    group.abun[[i]] = group.abun[[i]][,c(ncol(group.abun[[i]]), 1:(ncol(group.abun[[i]])-1))]
+    colnames(group.abun[[i]])[1] = "#OTU ID"
+    file = paste("results/", group, "_otu_abundance_", name, index, ".txt",sep="")
+    cat("# Constructed from biom file", "\n", file = file)
+    write.table(group.abun[[i]], file = file,quote=F,sep="\t",row.names=F, append = T)
+  }
+}
+```
+## check the undone permutations
+
+```{r}
+diseasedone =read.table("disease_done.txt",head=F,as.is=T)
+diseasedone = unlist(sapply(diseasedone$V1, function(x){y = unlist(strsplit(x, "/"))[2];y}))
+diseaseundone = setdiff(diseaseall, paste(diseasedone, ".txt",sep=""))
+```
+
+## Edge construct
+```{r}
+# construct the edge file for network based on the gml file from q2scnic
+# usage: 
+# find ../real_results/ -name "network.gml" -exec Rscript edgeConstruct.R {} q2scnic TRUE \;
+
+args = commandArgs(TRUE)
+edge.file = toString(args[1])
+method = toString(args[2])
+fromGml = as.logical(args[3])
+
+otutaxonomy = read.table("~/Dropbox/1.project/iMSMS_Human_16S/rdata/otutaxonomy.txt", head=T,as.is=T,row.names=1, sep="\t")
+taxanames = c("phylum", "class", "order", "family", "genus","species")
+label.taxa = otutaxonomy[,taxanames]
+label.taxa$family = gsub("[[]|[]]", "",label.taxa$family)
+label.taxa$label = rownames(label.taxa)
+# assign the relative abundance for each node
+if(fromGml){
+  #if(!require(multiplex)){
+  #install.packages("multiplex")
+  library("multiplex", quietly =TRUE)
+  edge = read.gml(edge.file)
+  edge = edge[,1:2]
+  colnames(edge) = c("from", "to")
+}else{
+  edge =read.csv(edge.file, head=T,as.is=T)
+  if(method == "q2scnic"){
+    fromto = strsplit(as.character(edge$name), split = " [(]interacts with[)] ")
+    fromto = do.call(rbind, fromto)
+    colnames(fromto) = c("from", "to")
+    edge = cbind(edge, fromto,stringsAsFactors =F)
+  }
+  
+  otuaverage = data.frame(abun = apply(taxaverage[[6]],1,mean))
+  otuaverage$from = otuaverage$to = rownames(otuaverage)
+  
+  edge= merge(edge, otuaverage[,c("from", "abun")], by = "from")
+  edge$from.abun = edge$abun
+  edge= merge(edge, otuaverage[,c("to", "abun")], by = "to")
+  edge$to.abun = edge$abun.y
+  edge = edge[, -c(ncol(edge), ncol(edge)-1)]
+}
+
+# annotate node with taxa
+colnames(label.taxa) = gsub("label", "from", colnames(label.taxa))
+edge = merge(edge,label.taxa, by = "from" )
+colnames(label.taxa) = gsub("from", "to", colnames(label.taxa))
+edge = merge(edge,label.taxa, by = "to" )
+colnames(edge) = gsub("[.]x", "From", colnames(edge))
+colnames(edge) = gsub("[.]y", "To", colnames(edge))
+if(method == "q2scnic"){
+  write.csv(edge, gsub("network.gml", "network_edge.csv", edge.file), row.names=F)
+}else{
+  write.csv(edge, paste(gsub("[.]csv", "", edge.file), "_taxa.csv",sep=""),row.names=F)
+}
+```
+
+## Network construct and calculation
+```{r}
+# construct the network by the edge file
+# usage: 
+# find MS/q2scnic -name "network_edge.csv" -exec Rscript netConstruct.R {} TRUE 4 \;
+args = commandArgs(TRUE) 
+edge.file = toString(args[1]) 
+filter = as.logical(args[2])
+cluster.size = as.numeric(args[3])
+
+data =read.csv(edge.file, head=T,as.is=T)
+library("igraph", quietly =TRUE,warn.conflicts=FALSE)
+grn = graph.data.frame(data[,c("from","to")],directed =FALSE)
+# filter the small cluster
+if(filter){
+  cl = clusters(grn)
+  small.clusters = which(cl$csize <= cluster.size)
+  vertices.to.delete = which(cl$membership %in% small.clusters) 
+  grn = delete.vertices(grn, vertices.to.delete)
+}
+density = graph.density(grn, loops = FALSE)
+clusterCoefficient = transitivity(grn, type = "average")
+path = average.path.length(grn, directed = FALSE)
+nodes = length(V(grn))
+edges = length(E(grn))
+id = unlist(strsplit(edge.file, "[/]"))[3]
+result = data.frame(density = density, clusterCoefficient = clusterCoefficient, averagePathLength = path, nodeNumb = nodes, edgeNumb = edges, ID = id, stringsAsFactors = F)
+write.table(result, gsub("edge.csv", "properties.txt", edge.file), row.names=F,quote=F,sep = "\t")
+```
+
+
+```{bash}
+# merge all permutated network properties
+head -n 1 MS/q2scnic/MS_otu_abundance_Control1/otu_table_sparCC_net.modules/network_properties.txt > ms_network_properties.txt
+find MS/q2scnic -name "network_properties.txt" | xargs -n 1 tail -n +2 >> ms_network_properties.txt
+```
+
+## Statistics analysis
+```{r}
+permuTest = function(group = "MS", comp = c("MS","Control")){
+  realdata = read.table("results/Network/q2-SCNIC/Permutation_sparCC/real_properties.txt",head=T,as.is=T)
+  permdata = read.table(paste("results/Network/q2-SCNIC/Permutation_sparCC/", group, "/", group, "_network_properties.txt",sep=""),head=T,as.is=T)
+  realdiff = list()
+  properties = colnames(permdata)[1:5]
+  
+  #for plot
+  grouprealdata = realdata[realdata$ID %in% paste("otu_abundance_", comp,sep=""),]
+  #difference 
+  realdiff =sapply(properties, function(x){
+    y = realdata[realdata$ID == paste("otu_abundance_",comp[1],sep=""),x] - realdata[realdata$ID == paste("otu_abundance_",comp[2],sep=""),x]
+    y
+  })
+  permdiff = sapply(properties, function(x){
+    y = sapply(1:1000, function(z){
+      diff = permdata[permdata$ID == paste(group, "_otu_abundance_",ifelse(comp[1] == "Female", "F", comp[1]), z,sep=""),x] - permdata[ permdata$ID == paste(group, "_otu_abundance_",ifelse(comp[2] == "Male", "M", comp[2]), z,sep=""),x]
+      diff
+    })
+    y
+  })
+  
+  #test
+  test = sapply(properties, function(x){
+    if(as.numeric(realdiff[x]) > 0 ){
+      y = length(permdiff[permdiff[,x] > as.numeric(realdiff[x]),x])/1000
+      t = data.frame(pvalue = y, test = "greater",stringsAsFactors = F)
+    }else{
+      y = length(permdiff[permdiff[,x] < as.numeric(realdiff[x]),x])/1000
+      t = data.frame(pvalue = y, test = "less", stringsAsFactors = F)
+    }
+    t
+  })
+  test = apply(test,2, unlist)
+  test = data.frame(t(test), stringsAsFactors = F)
+  write.csv(test, paste("results/Network/q2-SCNIC/Permutation_sparCC/", group, "/", group, "_", paste(comp, collapse = "_"), "_network_properties_pvalue.csv",sep=""))
+  #list(permdiff = permdiff, test = test, grouprealdata = grouprealdata)
+  # density plot
+  pdf(paste("results/Network/q2-SCNIC/Permutation_sparCC/", group, "/",group,"_", paste(comp, collapse = "_"), "_density_plot_all_properties.pdf",sep=""), width = 15, height =3)
+layout(matrix(1:5,1,5))
+for(i in 1:length(properties)){
+  plot(density(permdiff[,i]), main = properties[i])
+  abline(v = realdiff[i], col = "red", lty  =2)
+  if(test[i,"test"] == "less"){
+    legend("topleft", paste("P value = ", test[i,"pvalue"],sep=""),  box.col =NA)
+  }else{
+    legend("topright", paste("P value = ", test[i,"pvalue"],sep=""), box.col =NA)
+  }
+}
+dev.off()
+
+list(permdata  = permdata, realdata = grouprealdata, test = test)
+}
+```
+
+off = permuTest(group = "treatment_status", comp = c("Off", "Control"))
+
+# boxplot/line plot the permutations
+permPlot(permdata = off[[1]],realdata= off[[2]], property = "clusterCoefficient", plot.type = "boxplot", comp = c("Treated" ,"Off"))
+```{r}
+permPlot = function(permdata= off[[1]], realdata= off[[2]], property = "density", plot.type = c("boxplot", "lineplot"), comp = c("Off", "Control")){
+  perm = permdata[,c(property, "ID")]
+perm$Group = gsub("^.*abundance_", "", perm$ID)
+perm$Pair = gsub("[a-z]|[A-Z]|[.]", "", perm$Group)
+perm$Group = gsub("[0-9]", "", perm$Group)
+perm = perm[perm$Group %in% comp,]
+real = realdata[,c(property, "ID")]
+real$Group =  gsub("^.*abundance_", "", real$ID)
+real$Pair = 0
+
+if(plot.type == "lineplot"){
+  g = ggplot(perm, aes_string("Group", property, group = "Pair")) + geom_line(color = "black" ) +geom_point(size = 0) + xlab("") + ylab(paste("OTU network ", property,sep="")) + theme_classic()
+g + geom_point(data = real, aes_string(x = "Group", y =property), color = "red") +  geom_line(data = real,color = "red", lwd = 1.2, lty = 2)
+ggsave(file = paste("results/Network/q2-SCNIC/Permutation_sparCC/", group, "/", group, "_",paste(comp, collapse = "_"),  "_", property, "_significant_lineplot.pdf",sep=""),width =5, height = 5)
+}
+
+# box plot
+if(plot.type == "boxplot"){
+  g=  ggplot(data = perm, aes_string(x="Group", y=property,color="Group")) + 
+  theme_classic()+
+  # geom_jitter(position=position_jitter(0.2),cex=1)+
+  geom_boxplot(outlier.size = 1,aes(color =Group, fill = Group),alpha = 0.8,show.legend = NA)+
+  xlab("") + ylab(paste("OTU network ", property,sep=""))
+p = g+ geom_point(data = real, aes_string(x = "Group", y = property), shape = 17, color = "black")
+ggsave(p , file = paste("results/Network/q2-SCNIC/Permutation_sparCC/",group, "/", group,"_",paste(comp, collapse = "_"), "_", property, "_significant_boxplot.pdf",sep=""), useDingbats =F,width =5, height =5)
+}
+#point plot
+if(plot.type== "pointplot"){
+  data_summary <- function(x) {
+  m <- mean(x)
+  ymin <- m-sd(x)
+  ymax <- m+sd(x)
+  return(c(y=m,ymin=ymin,ymax=ymax))
+}
+g=  ggplot(data = perm, aes_string(x="Group", y= property,color="Group")) + 
+  geom_jitter(position=position_jitter(0.2),cex=2)+
+  stat_summary(fun.data=data_summary, color =c("black"))+
+  xlab("") + ylab("OTU network density")
+g+ geom_point(data = real, aes_string(x = "Group", y =property), shape = 17, color = "black")
+}
+}
+
+```
+
+# 9. Diet-microbe RDA analysis
+```{r}
+treats= split(seqmeta, seqmeta$treatment_status)
+treat.species = lapply(treats[-1], function(x){y = species[, colnames(species) %in% seqmeta[seqmeta$household %in% x$household, 1]];y})
+treat.species = lapply(treat.species, function(x) {y = x[rowSums(x) >=100, ]; y = y[rowSums(y>0) >= 0.05*ncol(y),]; y})
+
+load("~/Dropbox/1.project/Dietary_questionnaires_round2/rdata/dietpairsum.rda")
+diet = dietpairsum[[10]]
+#usage: 
+# rda_analysis(diet.genus = taxrel[[5]], diet.diet = dietpair[[6]], diet.terms = diettermssum, plot.sample =T, col.list = col.list, condietpair = condietpair, group = "disease")
+# dev.copy2pdf(file = "results/9.2Dietary_questionnaires181217/High_abundant_genera_top10_Adnois_unsummed_diets_RDA.pdf", height =6, width =6, useDingbats =F)
+
+rda_analysis = function(diet.genus = treat.species[["Off"]], diet.diet = diet, diet.terms = diet.termunsum,plot.sample=FALSE, col.list = disease.cols, condietpair, group = "disease"){
+  names = intersect(colnames(diet.genus), colnames(diet.diet))
+  diet.genus = data.frame(t(diet.genus[,names]), stringsAsFactors = F)
+  diet.diet = t(diet.diet[,names])
+  require("vegan")
+  rda.result = rda(diet.genus, diet.diet,scale =TRUE)
+  rdavalue = data.frame(summary(eigenvals(rda.result,model  ="constrained")))
+  rdavalue = c(rda1 =round(rdavalue[2,1]*100,digits = 1), rda2 = round(rdavalue[2,2]*100,digits = 1))
+  # check the most important dietary variables and microbes
+  rda.sample = rda.result$CCA$u
+  rda.genus = rda.result$CCA$v
+  rda.diet = rda.result$CCA$biplot
+  
+  # genus.top were selected by the abudnance higher than 1% percentage
+  genus.top = colnames(diet.genus[, colMeans(diet.genus) > 0.01])
+  genus.top = genus.top[!grepl("g__$", genus.top)]
+  diet.top = rownames(rda.diet[order(rda.diet[,1]^2 + rda.diet[,2]^2 ,decreasing = T), ])[1:10]
+  diet.top = union(diet.terms, diet.top)
+  
+  rda.genus2 = rda.genus[rownames(rda.genus) %in% genus.top,1:2]
+  rda.diet2 = rda.diet[rownames(rda.diet) %in% diet.top,1:2]
+  
+  if(plot.sample){
+    groups = condietpair[match(rownames(rda.sample), condietpair$iMSMS_ID), group]
+    if(is.list(col.list)){
+      col = col.list[[group]][match(groups, names(col.list[[group]]))] 
+    }else{
+      col = col.list
+    }
+    plot(rda.sample[,1], rda.sample[,2],col =col,
+         xlim = c(min(rda.sample[,1], rda.genus2[,1], rda.diet2[,1]), max(rda.sample[,1], rda.genus2[,1], rda.diet2[,1])), 
+         ylim = c(min(rda.sample[,2], rda.genus2[,2], rda.diet2[,2]), max(rda.sample[,2], rda.genus2[,2], rda.diet2[,2])),pch = 16,
+         xlab = paste("RDA1", " (",rdavalue[1], "%)",sep=""), ylab = paste("RDA2", " (",rdavalue[2], "%)",sep=""))
+  }else{
+    plot(rda.genus2[,1], rda.genus2[,2], type='n',
+         #col = col.list[[group]][match(condietpair[,group], names(col.list[[group]]))], 
+         xlim = c(min(rda.genus2[,1], rda.diet2[,1]), max(rda.genus2[,1], rda.diet2[,1])), 
+         ylim = c(min(rda.genus2[,2], rda.diet2[,2]), max(rda.genus2[,2], rda.diet2[,2])),pch = 16,
+         xlab = paste("RDA1", " (",rdavalue[1], "%)",sep=""), ylab = paste("RDA2", " (",rdavalue[2], "%)",sep=""))
+  }
+  text(rda.diet2[,1],rda.diet2[,2], labels = gsub("^.*g__", "", rownames(rda.diet2)), cex = 0.8)
+  arrows(0,0, rda.diet2[,1],rda.diet2[,2], col = "black",length=0.05,angle=20, lwd =1.5)
+  text(rda.genus2[,1],rda.genus2[,2], labels = gsub("^.*g__", "", rownames(rda.genus2)), 
+       col ="darkgrey", cex = 0.8)
+  abline(h =0, v = 0, lty =2)
+  arrows(0,0, rda.genus2[,1],rda.genus2[,2], col = "darkgrey",length=0.05,angle=20, lwd =1.5)
+}
+```
+
+

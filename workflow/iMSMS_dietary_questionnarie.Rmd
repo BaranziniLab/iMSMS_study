@@ -1,0 +1,2091 @@
+---
+title: "iMSMS dietary questionnaires analysis"
+author: "Xiaoyuan Zhou"
+date: "12/18/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/xiaoyuan/Dropbox/1.project/Dietary_questionnaires_round2/')
+```
+
+# Introduction
+To use this script, require these packages 
+```{r}
+# if the packages were not installed, use the flowing command to install the package, replace "packagename" with "gdata", "WriteXLS", "vegan" and so on.
+install.packages("packagename")
+
+library("gdata")
+library("WriteXLS")
+library("vegan")
+library("ggplot2")
+theme_set(theme_bw() +
+            #eliminates background, gridlines, and chart border
+            theme(text = element_text(size=15),
+                  plot.title = element_text(size = 12, face = "bold",hjust = 0.5),
+                  axis.line = element_line(colour = "black",size =0.5),
+                  plot.background = element_blank()
+                  ,panel.grid.major = element_blank()
+                  ,panel.grid.minor = element_blank(),
+                  axis.text.x = element_text(colour = "black"),
+                  axis.text.y = element_text(colour = "black"),
+                  panel.border =  element_blank()))
+
+# for age calcualtion
+library("eeptools")
+```
+
+# set colors for disease, site
+# Set colors for group
+```{r}
+disease_course.cols = c(Control = "#74add1",RRMS = "#a50026" , PPMS = "#f6b56e",SPMS = "#f2e8ad", PMS = "#FFBF74",MS ="#a50026" )
+pms.cols = c(Control_RRMS = "#74add1",RRMS= "#a50026",Control_PMS = "#74add1",PMS = "#FFBF74")
+disease.cols = c(HC= "#74add1",MS= "#a50026")
+Site.cols = c("San Francisco" = "#8c510a", "Boston" = "#bf812d", "New York" = "#dfc27d", "Pittsburgh" = "#c7eae5", "Buenos Aires" = "#80cdc1", "Edinburgh" = "#35978f", "San Sebastian" = "#01665e")
+sex.cols = c("F" ="#df88d9", "M" =  "#20c7e1")
+treatment.cols = c(Control = "#74add1", Untreated = "#878787", Treated = "#67001f")
+wetdry.cols = c(dry = "#f0af6e", wet = "#622006")
+type.cols = c(Q1 ="#f0af6e",  Q2 = "#f0af6e", S1= "#622006",S2="#622006")
+col.list = list(disease_course = disease_course.cols,
+                  pms =pms.cols,
+                  disease = disease.cols,
+                  site = Site.cols,
+                  sex = sex.cols,
+                  treatment_status = treatment.cols,
+                  wet_dry = wetdry.cols,
+                  type = type.cols)
+```
+
+# Metadata preparation
+```{r}
+# simplify the columns 
+data = read.xls("data/iMSMS_Phenotypes_April2019.xlsx",sheet=1, head=T,as.is=T)
+metadata = read.xls("data/iMSMS_Phenotypes_April2019_simplified.xlsx",sheet=1, head=T,as.is=T)
+data.simp = data[, colnames(metadata)]
+require("eeptools") # for age calculation
+# modify the metadata first for sample DOB earlier than visit date
+metadata$dob = sapply(metadata$dob, function(x) gsub("2016.*$|2017.*$|2018.*$", "", x))
+metadata$age = apply(metadata[,c(3:4)], 1, function(x){
+  if("" %in% x){
+    y = NA
+  }else{
+    y = floor(age_calc(as.Date(x[1]),as.Date(x[2]), units = "years"))
+  }
+  y
+})
+
+#metadata = metadata[!(metadata$REDCap_Subject_Survey_Status == "Missing" & metadata$REDCap_Clinical_Survey_Status == "Missing"), ]
+
+# extract the missing data
+missing =read.xls("data/iMSMS_Phenotypes_April2019_simplified.xlsx",sheet=3, head=T,as.is=T)
+#missing = data.simp[data.simp$iMSMS_ID %in% missing$iMSMS_ID, ]
+
+# fill the missing based on qiitadata
+qiitadata = read.xls("Qiita_iMSMSv2_subject_metadata.xlsx",sheet=3, head=T,as.is=T)
+qiitadata$COLLECTION_TIMESTAMP = gsub("-.*", "", qiitadata$COLLECTION_TIMESTAMP)
+qiitadata = unique(qiitadata)
+# change the collection date to the known date
+data1 = qiitadata[qiitadata$COLLECTION_TIMESTAMP != "not provided",]
+data1 = unique(data1)
+# remove repeated records
+ids = unique(data1$ANONYMIZED_NAME.or.tube_id)
+data.list = list()
+for(id in ids){
+  data = data1[data1$ANONYMIZED_NAME.or.tube_id %in% id,]
+  if(nrow(data) == 1){
+      data.list[[id]] = data
+  }else{
+   if(data$COLLECTION_TIMESTAMP[1] < data$COLLECTION_TIMESTAMP[2]){
+     data.list[[id]] = data[1, ]
+   }else{
+     data.list[[id]] = data[2, ]
+   }
+  }
+}
+data1 = do.call("rbind", data.list)
+data2 = qiitadata[qiitadata$COLLECTION_TIMESTAMP %in% "not provided", ]
+data2 = unique(data2)
+data2 = data2[!data2$ANONYMIZED_NAME.or.tube_id %in% data1$ANONYMIZED_NAME.or.tube_id, ]
+qiitadata2 = rbind(data1, data2) # 1141 samples included
+# subjects with unknown gender/age, 85 samples
+qiitamissing = qiitadata2[qiitadata2$sex %in% c("not applicable", "not provided", "") | qiitadata2$host_age %in% c("not provided", "not applicable", "-1", "-2","-957", "0", "1", "3"), ]
+qiitamissing = qiitamissing[1:54,]
+
+qiitadata2 = qiitadata2[!qiitadata2$ANONYMIZED_NAME.or.tube_id %in% qiitamissing$ANONYMIZED_NAME.or.tube_id, ] # 1056 samples 
+
+missing$host_age = qiitadata2[match(missing$iMSMS_ID, qiitadata2$ANONYMIZED_NAME.or.tube_id), "host_age"] 
+missing$sex = qiitadata2[match(missing$iMSMS_ID, qiitadata2$ANONYMIZED_NAME.or.tube_id), "sex"]
+missing = missing[,c(1:5,63,64,6:62)]
+
+missing.fill = missing[!is.na(missing$host_age) & !is.na(missing$sex), ]
+missing.fill$age = missing.fill$host_age
+missing.fill$Sex = missing.fill$sex
+missing.fill = missing.fill[,-c(which(colnames(missing.fill) %in% c("host_age", "sex")))]
+metadata =rbind(metadata[!metadata$iMSMS_ID %in% missing.fill$iMSMS_ID, ], missing.fill)
+
+missing.unfill = missing[!missing$iMSMS_ID %in% missing.fill$iMSMS_ID, ]
+missing.diet = missing.unfill[missing.unfill$iMSMS_ID %in% c(colnames(dietpair[[6]]), qiitamissing$ANONYMIZED_NAME.or.tube_id),]
+
+# read data modified based on qiita
+metadata = read.xls("data/iMSMS_Phenotypes_April2019_simplified.xlsx",sheet=2, head=T,as.is=T)
+qiitadata  = metadata[metadata$iMSMS_ID %in% qiitadata$ANONYMIZED_NAME.or.tube_id, ]
+```
+
+
+# Extract raw data and results
+```{r}
+files = list.files(path = "data/Questionnaires/FFQ_Share/Food_Frequency_Questionnaires/", pattern = "raw-data-and-results.txt",recursive = T,full.names = T)
+#files = files[-c(7:9)]
+dietraw = lapply(files, function(x){
+  y = read.table(x, head=T,as.is=T,sep=";")
+  y
+})
+
+# spanish dietary has more columns, so sperate English and Spanish
+# English
+diet1 = do.call("rbind", dietraw[c(1:4,7:9)])
+# remove the duplicated records from Mount Sinai site
+dp = diet1$RESPONDENTID[which(duplicated(diet1$RESPONDENTID))]
+dpindex = which(diet1$RESPONDENTID %in% dp)
+lens = length(dpindex)
+diet1 = diet1[-dpindex[6:10], ]
+
+#Spanish
+diet2 = do.call("rbind", dietraw[c(5:6)])
+
+# extract sex, age, BMI data
+dietage = rbind(diet1[,1:10],diet2[,1:10])
+
+# combine english and spanish
+diet.vars= intersect(colnames(dietraw[[1]]), colnames(dietraw[[5]]))
+dietraw.tab = rbind(diet1[, diet.vars], diet2[,diet.vars])
+
+dietraw.tab$RESPONDENTID = mygsub(c("MS_IK","HC_IK","-C","-J","MS-IK", "_$", "^76401", "^76402"),c("71601-0","71602-0","","","71601-0", "", "76401-", "76402-"),dietraw.tab$RESPONDENTID)
+
+# change IDs for pittsburgh
+idspitt = read.xls("data/Questionnaires/20190818/765Upitt/20190719/PRT_iMSMS_identifiers20190719.xlsx",head=T,as.is=T, sheet =1)
+
+for(i in 1:nrow(dietraw.tab)){
+  dietraw.tab$RESPONDENTID[i]  = ifelse(dietraw.tab$RESPONDENTID[i] %in% idspitt$PRT.Study.ID, idspitt[idspitt$PRT.Study.ID == dietraw.tab$RESPONDENTID[i],]$iMSMS.Study.ID, dietraw.tab$RESPONDENTID[i])
+}
+dietraw.tab[dietraw.tab$RESPONDENTID == "717", ]$RESPONDENTID = "71702-0001"
+dietraw.tab[dietraw.tab$RESPONDENTID == "71701121", ]$RESPONDENTID = "71701-0121"
+dietraw.tab[dietraw.tab$RESPONDENTID == "71702-132", ]$RESPONDENTID = "71702-0132"
+
+# get the 1034 samples
+dietres = dietraw.tab[match(heiseqmeta$iMSMS_ID, dietraw.tab$RESPONDENTID),]
+
+# varibles from 11:83 are DIET ANALYSIS OUTPUT VARIABLES
+```
+
+# Extract HEI/AHEI scores
+```{r}
+hei1 = read.table("data/iMSMS_HEI-AHEI_07-31-2019/iMSMS_English FFQs_HEI-AHEI.txt", head=T,as.is=T)
+hei2 = read.table("data/iMSMS_HEI-AHEI_07-31-2019/iMSMS_Spanish FFQs_HEI-AHEI.txt",head=T,as.is=T)
+hei = rbind(hei1, hei2)
+hei$RESPONDENTID = mygsub(c("MS_IK","HC_IK","-C","-J","MS-IK", "_$", "^76401", "^76402"),c("71601-0","71602-0","","","71601-0", "", "76401-", "76402-"),hei$RESPONDENTID)
+# manually check the mis-written names
+hei[hei$RESPONDENTID == "717", ]$RESPONDENTID = "71702-0001"
+hei[hei$RESPONDENTID == "71701121", ]$RESPONDENTID = "71701-0121"
+hei[hei$RESPONDENTID == "71702-132", ]$RESPONDENTID = "71702-0132"
+
+#change IDs for UPitt
+
+for(i in 1:nrow(hei)){
+  hei$RESPONDENTID[i]  = ifelse(hei$RESPONDENTID[i] %in% idspitt$PRT.Study.ID, idspitt[idspitt$PRT.Study.ID == hei$RESPONDENTID[i],]$iMSMS.Study.ID, hei$RESPONDENTID[i])
+}
+
+# 1699 samples with hei scores
+# keep the sequenced samples only
+load("~/Dropbox/1.project/iMSMS_round2_metagenomics/rdata/seqmeta1152.rda")
+seqmeta= seqmeta1152
+seqmeta$iMSMS_ID = gsub("[.]", "-", seqmeta$iMSMS_ID)
+
+heiseq = hei[hei$RESPONDENTID %in% seqmeta$iMSMS_ID, ]
+dp = heiseq$RESPONDENTID[duplicated(heiseq$RESPONDENTID)]
+dpindex = which(heiseq$RESPONDENTID %in% dp)
+heiseq = heiseq[-dpindex[4:6],]
+colnames(heiseq)[1] = "iMSMS_ID"
+
+# pearson correlation
+heiseqmeta = seqmeta[match(heiseq$iMSMS_ID, seqmeta$iMSMS_ID), ]
+load("../iMSMS_round2/rdata/cofounder.anova.rda")
+hei.names = c("HEI2005_TOTAL_SCORE", "HEI2010_TOTAL_SCORE", "HEI2015_TOTAL_SCORE", "AHEI2010")
+
+# keep only pairs
+
+heiseqmeta = heiseqmeta[order(heiseqmeta$household),]
+houses = table(heiseqmeta$household)
+houses = houses[houses ==2]
+heiseqmetapair = heiseqmeta[heiseqmeta$household %in% names(houses),]
+
+heiseqpair= heiseq[heiseq$iMSMS_ID %in% heiseqmetapair$iMSMS_ID, ]
+heiseqmetaall = heiseqmeta
+heiseqmeta = heiseqmetapair
+heiseqall = heiseq
+heiseq = heiseqpair
+
+cor.result = matrix(NA, nrow = 3, ncol = 4)
+pval.result = matrix(NA, nrow = 3, ncol = 4)
+for(c in 1:ncol(cor.result)){
+    y = cor.test(as.numeric(heiseqmeta[,"age"]), heiseq[,hei.names[c]])
+  cor.result[1,c] = y$estimate
+  pval.result[1,c] = y$p.value
+  y = cor.test(as.numeric(heiseqmeta[,"bmi"]), heiseq[,hei.names[c]])
+  cor.result[2,c] = y$estimate
+  pval.result[2,c] = y$p.value
+  
+    y = cor.test(as.numeric(heiseqmeta[,"gARMSS"]), heiseq[,hei.names[c]])
+  cor.result[3,c] = y$estimate
+  pval.result[3,c] = y$p.value
+  
+}
+rownames(cor.result) = rownames(pval.result) = c("age", "BMI","gARMSS")
+colnames(cor.result) = colnames(cor.result) = hei.names
+
+# correlation plot
+colnames(heiseq)[1] = "iMSMS_ID"
+heidata = merge(heiseq, heiseqmeta,by = "iMSMS_ID")
+heidata$bmi = as.numeric(heidata$bmi)
+heidata$age = as.numeric(heidata$age)
+heidata$uGMSSS = as.numeric(heidata$uGMSSS)
+heidata$gARMSS = as.numeric(heidata$gARMSS)
+
+
+g = list()
+#require(ggpubr)
+for(i in hei.names){
+ g[[i]] = ggscatter(heidata[heidata$disease =="MS",], x = "uGMSSS", y =i,add = "reg.line", color= "disease",paletto = "jco", palette =c("Control"= "#74add1", "MS"= "#a50026"),conf.int =T,cor.coef = F, cor.method = "pearson",size =1) + stat_cor(aes(color = disease,label = paste(..r.label..,..p.label..,sep="~`,`~")),label.y = c(95,100)) + theme(legend.position="none")
+}
+
+
+#library(gridExtra)
+g = grid.arrange(g[[1]],g[[2]],g[[3]],g[[4]], nrow =1)
+ggsave(g, file = "results/HEI_age_bmi_gARMSS_paired/BMI_RRMS_HEI_correlation.pdf", width =12, height = 3, useDingbats=F)
+
+# log transform BMI 
+heidata.log= heidata
+heidata.log$bmi = log10(heidata.log$bmi)
+
+g = list()
+#require(ggpubr)
+for(i in hei.names){
+ g[[i]] = ggscatter(heidata.log[heidata.log$pms =="PMS",], x = "bmi", y =i,add = "reg.line", color= "disease",paletto = "jco", palette =c("Control"= "#74add1", "MS"= "#a50026"),conf.int =T,cor.coef = F, cor.method = "pearson",size =1) + stat_cor(aes(color = disease,label = paste(..r.label..,..p.label..,sep="~`,`~")),label.y = c(95,100)) + theme(legend.position="none")
+}
+ 
+g = grid.arrange(g[[1]],g[[2]],g[[3]],g[[4]], nrow =1)
+ggsave(g, file = "results/HEI_517pairs/HEI_age_bmi_gARMSS_paired/BMI_log10_HEI_correlation.pdf", width =12, height = 3, useDingbats=F)
+```
+
+## Boxplot HEI by group
+```{r}
+# boxplot the HEI
+heilist = list(HEI2005 = heiseq[,c("iMSMS_ID", "HEI2005_TOTAL_SCORE")], 
+               HEI2010 = heiseq[,c("iMSMS_ID", "HEI2010_TOTAL_SCORE")],
+               HEI2015 = heiseq[,c("iMSMS_ID", "HEI2015_TOTAL_SCORE")],
+               AHEI = heiseq[,c("iMSMS_ID", "AHEI2010")])
+heilist = lapply(heilist,function(x){
+  colnames(x)[1] = "iMSMS_ID"
+  y = merge(x, heiseqmeta, by ="iMSMS_ID")
+  rownames(y) = y$iMSMS_ID
+  y = y[,-1]
+  y
+})
+
+
+source("scripts/dietBoxplot.R")
+y.groups = c("allergies","anxiety","asthma","depression","diet_no_special_needs","dmt", "education", "otc_meds", "pets","probiotics","sex", "site", "smoke")
+
+for(y.group in y.groups){
+  dietBoxplot(data =heilist, x.group = "disease", y.group = y.group,plot.type = "jitterplot", out.dir = "results/HEI_517pairs/Boxplot_HEI/", jitterdodge = 0.2,width =4.5, height = 4)
+  dietBoxplot(data =heilist, x.group = "disease", y.group = y.group,plot.type = "boxplot", out.dir = "results/HEI_517pairs/Boxplot_HEI/",width =4.5, height = 4 )
+}
+
+dietBoxplot(data =heilist, x.group = "disease", y.group = "disease", out.dir = "results/HEI_517pairs/Boxplot_HEI/",plot.type = "boxplot", width =4, height =4)
+dietBoxplot(data =heilist, x.group = "disease", y.group = "disease", out.dir = "results/HEI_517pairs/Boxplot_HEI/",plot.type = "jitterplot", width =4, height =4, jitterdodge = 0.7)
+
+
+
+data = heilist[[3]]
+TukeyHSD(aov(HEI2015_TOTAL_SCORE ~ education, data = data[data$disease == "MS",]))
+# paired T-test
+ms = data[data$disease == "MS",]
+control =  data[data$disease == "Control",]
+
+control = control[match(ms$household, control$household),]
+t.test(ms$HEI2015_TOTAL_SCORE, control$HEI2015_TOTAL_SCORE, paired = T)$p.value
+
+```
+
+# Extract html reports data from dietary questionnaires 
+```{r}
+if(!require(XML)){
+  install.packages("XML")
+}
+#the html file includes inforamtion for a pair of patients
+dataall = list()
+files = list.files(path = "data/Questionnaires/20200608/", pattern = "html", full.names = T ,recursive = T)
+
+#read the files, the Buenos Aires
+dataall= sapply(files, function(x){
+  if(grepl("718BuenosAires|764SanSebastian", x)){
+    table = htmlParse(x)
+    y = getNodeSet(table,"//table")
+    n = length(y)
+    numbers = c(seq(5,n,6), seq(3, n,6))
+    len = length(numbers)
+    z = list()
+    for(i in 1:len){z[[i]] = readHTMLTable(y[[numbers[i]]])}
+    
+    res1 = lapply(z[1:(len/2)], function(x){
+      y = matrix(colnames(x),1,2)
+      colnames(y) = colnames(x) = c("Category","Value")
+      x = rbind(y,x)
+      x = data.frame(x,stringsAsFactors = FALSE)
+      #x = x[-nrow(x),]
+      x = apply(x, 2, as.character)
+      x[,1] = paste(x[,1]," supplements",sep="")
+      x
+    })
+    res2 = lapply(z[((len/2)+1):len], function(x){
+      x = x[,1:2]
+      colnames(x) = c("Category","Value")
+      #remove the titles
+      x = x[!is.na(x$Value),]
+      x$Category = as.character(x$Category)
+      x$Value = as.character(x$Value)
+          if(!require("stringr")){
+      install.packages("stringr")
+    }
+      x$Category = str_replace_all(x$Category, "Â", "")
+      x$Value = str_replace_all(x$Value, "Â", "")
+      s  =  strsplit(as.character(x$Category), split = "\n\t\t      ")
+      v = strsplit(x$Value, split = "\n\t\t      ")
+      x = data.frame(Category = unlist(s), Value = unlist(v),stringsAsFactors = F)
+      x = x[-30,]
+      x
+    })
+  } else{
+    y = readHTMLTable(x,header=TRUE)
+    n = length(y)
+    numbers = c(seq(5,n,6), seq(3, n,6))
+    len = length(numbers)
+    z = readHTMLTable(x, header =TRUE, which = numbers)
+    res1 = lapply(z[1:(len/2)], function(x){
+      y = matrix(colnames(x),1,2)
+      colnames(y) = colnames(x) = c("Category","Value")
+      x = rbind(y,x)
+      x = data.frame(x,stringsAsFactors = FALSE)
+      #x = x[-nrow(x),]
+      x = apply(x, 2, as.character)
+      x[,1] = paste(x[,1]," supplements",sep="")
+      x
+    })
+    if(!require("stringr")){
+      install.packages("stringr")
+    }
+    res2 = lapply(z[((len/2)+1):len], function(x){
+      x = x[,1:2]
+      colnames(x) = c("Category","Value")
+      #remove the titles
+      x = x[!is.na(x$Value),]
+      x$Category = as.character(x$Category)
+      x$Value = as.character(x$Value)
+      x$Category = str_replace_all(x$Category, "Â", "")
+      x$Value = str_replace_all(x$Value, "Â", "")
+      s  =  strsplit(as.character(x$Category), split = "\r\n\t\t      ")
+      v = strsplit(x$Value, split = "\r\n\t\t      ")
+      x = data.frame(Category = unlist(s), Value = unlist(v),stringsAsFactors = F)
+      x = x[-30,]
+      x
+    })
+  }
+  
+  res = list()
+  for(i in 1:length(res1)){
+    res[[i]] = rbind(res1[[i]],res2[[i]])
+  }
+  res = lapply(res, function(x){
+    x$Category = as.character(x$Category)
+    x$Value = as.character(x$Value)
+    for(i in 1:nrow(x)){
+      x[i, "Category"] = ifelse(grepl("%", x$Value[i]), paste(x$Category[i], " (%)", sep=""), paste(x$Category[i], " (",unlist(strsplit(x$Value[i]," "))[2], ")",sep=""))
+    }
+    x$Value = sapply(x$Value, function(x){
+      y = unlist(strsplit(x," "))[1]
+      y = ifelse(grepl("%",y),as.numeric(gsub("%","",y)), as.numeric(y))
+      y
+    })
+    select=  which(grepl("as % of cals",x$Category))
+    for(i in 1:length(select)){
+      x$Category[select[i]] = paste(x$Category[select[i]-1], " as % of cals", sep="")}
+    x
+  })
+  for(i in 1:length(res)){
+    colnames(res[[i]])[2] = paste("Value",i, sep="")
+  }
+  res
+})
+
+# change the categories for Buenos Aires, San Sebastian samples
+dataall[[5]] = lapply(dataall[[5]], function(x){x$Category = dataall[[1]][[1]]$Category; x})
+dataall[[6]] = lapply(dataall[[6]], function(x){x$Category = dataall[[1]][[1]]$Category; x})
+
+# merge the dietary records for all samples into a data frame
+out =lapply(dataall, function(x){Reduce(function(dtf1, dtf2) 
+  merge(dtf1, dtf2, by = "Category", all = TRUE),x)})
+# combine the results for pittsburgh
+out[[7]] = cbind(out[[7]], out[[8]])
+out[[7]] = out[[7]][,-42]
+
+out= out[-8]
+
+#get the sample IDs and added to the output data frames
+# one sample from UPenn was '81201' instead of '81301'
+ids = sapply(files, function(x){
+  titles = readLines(x)
+  ids = titles[grepl("71[[:digit:]]+-|IK.*|DOD|717$|71701121$|714010204|714020204|8730|7640|PRT1|8130|7650|8120", titles)]
+  ids = gsub("\t.* ","", ids)
+  ids
+})
+# merge the questionnaires for UPitt
+ids[[7]] = c(ids[[7]], ids[[8]])
+ids = ids[-8]
+#change IDs for UPitt
+idspitt = read.xls("data/Questionnaires/20200324/765Upitt/Study_ID_convert2020",head=T,as.is=T, sheet =1)
+
+idspitt$iMSMS.Study.ID = gsub("[(].*$| [(].*$", "", idspitt$iMSMS.Study.ID)
+ids[[7]] = gsub("_$", "", ids[[7]])
+ids[[7]] = idspitt[match(ids[[7]], idspitt$PRT.Study.ID), "iMSMS.Study.ID"]
+ids[[7]] = gsub(" ", "", ids[[7]])
+
+# change sample IDs in Mt. Sinai
+ids[[3]] = mygsub(c("MS_IK","HC_IK","-C","-J","MS-IK"),c("71601-0","71602-0","","","71601-0"),ids[[3]])
+# change sample IDs for Edinburgh
+ids[[4]][2] = "71702-0001"
+ids[[4]] = mygsub(c("71702-132", "71701121"), c("71702-0132","71701-0121" ), ids[[4]])
+# change sample IDs for San Sebastian
+ids[[6]] = mygsub(c("76401", "76402", "76403"),c("76401-", "76402-", "76403-"),ids[[6]])
+# change sample name for UPenn
+ids[[8]] = mygsub(c("81201"),c("81301"),ids[[8]])
+
+# name samples in dietary data frames
+for(i in 1:length(ids)){
+  colnames(out[[i]])[2:ncol(out[[i]])] = ids[[i]]
+}
+
+sites =c("San Francisco","Boston","New York","Edinburgh", "Buenos Aires", "San Sebastian", "Pittsburgh", "Pennsylvania", "San Diego")
+names(out) =  sites
+
+### change the column names 
+#define mygsub function to replace multiple patterns
+mygsub = function(pattern, replacement,x){
+  if(length(pattern)!=length(replacement)){
+    stop("Pattern and replacement do not have the same length")
+  }
+  result = x
+  for( i in 1:length(pattern)){
+    result= gsub(pattern[i],replacement[i],result)
+  }
+  result
+}
+# remove the samples with DOD ids in UCSF site
+out[[1]] = out[[1]][,!grepl("DOD", colnames(out[[1]]))]
+
+out2 = lapply(out, function(x){rownames(x) = x$Category; x = x[,-1];x})
+resall = do.call("cbind",out2)
+
+out[[length(out)+1]] = out2[[length(out)+1]] = resall
+names(out) = names(out2) = c(sites, "All")
+
+data = out2
+WriteXLS(out2, "Dietary_data_summary.xlsx")
+```
+
+# Paired dietary samples
+```{r}
+samplePaired = function(samples, site){
+  if(is.data.frame(samples)){
+    clnames = colnames(samples)
+  }else{
+    clnames = samples
+  }
+      mssamples = clnames[grepl("01-|01_", clnames)]
+      hcsamples = clnames[grepl("02-|02_", clnames)]
+      mssamples2 = gsub("02-","01-", hcsamples)
+      #mssamples2 = gsub("02_","01_", hcsamples)
+      mssamples2 = mssamples[mssamples %in% mssamples2]
+      hcsamples = gsub("01-", "02-", mssamples2)
+      #hcsamples = gsub("01_", "02_", mssamples2)
+      
+      cond = rbind(data.frame(sampleid =mssamples2, disease = "MS", site = site,type = 1:length(mssamples2),stringsAsFactors = F),data.frame(sampleid = hcsamples, disease = "HC",site = site,type = 1:length(mssamples2), stringsAsFactors = F))
+      cond
+}
+
+conddietpair = lapply(sites, function(x){
+  samplePaired(out[[x]], site = x)
+})
+# remove duplicated records in Mt. Sinai
+repnames = conddietpair[[3]]$sampleid[which(duplicated(conddietpair[[3]]$sampleid))]
+conddietpair[[3]] = conddietpair[[3]][!conddietpair[[3]]$sampleid %in% repnames,]
+conddietpair[[length(sites)+1]] = do.call("rbind", conddietpair[1:9])
+
+#extract the dietary records with only paired samples
+dietpair = list()
+for(i in 1:length(sites)){
+  #dietpair[[i]] = out[[i]][,c("Category",conddietpair[[i]]$sampleid)]
+  #rownames(dietpair[[i]]) = dietpair[[i]]$Category
+  #dietpair[[i]] = dietpair[[i]][,-1]
+  dietpair[[i]] = out[[i]][,conddietpair[[i]]$sampleid]
+}
+dietpair[[length(sites) +1]] = do.call("cbind", dietpair)
+names(dietpair) = names(out)
+WriteXLS(dietpair, "results/Dietary_data_summary_paired_clinical_unsummed.xlsx",row.names=T)
+```
+
+#Sum supplements
+```{r}
+dietpairsum = dietpair
+sumvar = c("Vitamin A","Vitamin C", "Vitamin E","Folate","Calcium","Iron","Zinc")
+sumvar2 = paste(sumvar, collapse = "|")
+dietpairsum = lapply(dietpair, function(x){
+  y1 = x[!grepl(sumvar2, rownames(x)),]
+  y = matrix(NA, length(sumvar), ncol(x))
+  for(i in 1:length(sumvar)){
+    y[i,] = apply(x[grepl(sumvar[i], rownames(x)),],2,sum)
+  }
+  rownames(y) = c("Vitamdietpairsumin A (RAE)","Vitamin C (mg)", "Vitamin E (mg)","Folate (mcg)","Calcium (mg)","Iron (mg)","Zinc (mg)")
+  colnames(y) = colnames(x)
+  res = rbind(y1, y)
+  res})
+WriteXLS(dietpairsum, "results/Dietary_data_summary_paired_clinical_summed.xlsx", row.names=T)
+# logged values for dietary categories######
+dietsumlog = lapply(dietpairsum, function(x){
+  y = log(x, base =2)
+  y
+})
+```
+
+# Metadata
+```{r}
+# 1562 samples
+load("../iMSMS_round2/rdata/redcap.rda")
+# metadata = read.xls("data/iMSMS_Phenotypes_April2019_simplified.xlsx",sheet=2, head=T,as.is=T)
+# metadata$disease_course = gsub("PRMS", "PPMS", metadata$disease_course)
+# metapair = samplePaired(metadata$iMSMS_ID, site ="All")
+# metadatapair = metadata[match(metapair$sampleid, metadata$iMSMS_ID), ]
+# 
+# subjectmeta = metadata[metadata$REDCap_Subject_Survey_Status == "Complete", ]
+# subjectpair = samplePaired(subjectmeta$iMSMS_ID,site ="All")
+# subjectmeta = subjectmeta[match(subjectpair$sampleid, subjectmeta$iMSMS_ID), ]
+# clinicmeta = metadata[metadata$REDCap_Clinical_Survey_Status == "Complete", ]
+# clinicpair = samplePaired(clinicmeta$iMSMS_ID, site = "All")
+# clinicmeta = clinicmeta[match(clinicpair$sampleid, clinicmeta$iMSMS_ID), ]
+
+dietmeta = redcap[redcap$iMSMS_ID %in% colnames(dietpair[[length(sites) +1]]), ] # 1451 samples in RedCap 
+# check completeness
+dietmetasite = split(dietmeta, f= dietmeta$site)
+
+# clinical survey completeness
+dietmetasite1 = lapply(dietmetasite, function(x){
+  y = x[x$survey_complete == "2",]
+  y
+})
+pairCount = function(data){
+  hc = unique(data[,1][grepl("02-", data[,1])])
+  hcpair = gsub("02-", "01-",hc)
+  
+  ms = unique(data[,1][grepl("01-", data[,1])])
+  hcms = intersect(hcpair, ms)
+  hconly = length(hc) - length(hcms)
+  msonly = length(setdiff(ms, hcms))
+  count = data.frame(Pair = length(hcms), ControlOnly = hconly, MSOnly = msonly)
+  count
+}
+dietmetasite1count = lapply(dietmetasite1, pairCount)
+
+# subject survey completeness
+dietmetasite2 = lapply(dietmetasite, function(x){
+  y = x[x$microbiome_subject_questionnaire_complete == "2",]
+  y
+})
+dietmetasite2count = lapply(dietmetasite2, pairCount)
+
+
+# paired dietmeta
+pair = samplePaired(dietmeta$iMSMS_ID, site = "All")
+dietmetapair = unique(dietmeta[match(pair$sampleid, dietmeta$iMSMS_ID), ]) # 1438 samples in pair
+
+# summarize the treatment type
+trm = dietmetapair[,274:283]
+trms = colnames(trm)
+
+for(i in 1:nrow(dietmetapair)){
+  index = which(trm[i,] == "1")
+  if(length(index) == 0){
+    if(dietmetapair$disease_course[i] == "Control"){
+      dietmetapair$treatment_type[i] =  "Control"
+    }else{
+      dietmetapair$treatment_type[i] =  "Off"
+    }
+  }else{
+    dietmetapair$treatment_type[i] =trms[index]
+  }
+}
+colnames(dietmetapair)[1] = "host_subject_id"
+#dietmetapair$host_subject_id = gsub("-", "_", dietmetapair$host_subject_id)
+
+rownames(dietmetapair) = dietmetapair$host_subject_id
+#colnames(dietmetapair)[3] = "site"
+dietmetapair[grepl("02-", dietmetapair$host_subject_id), "disease_course"] = "Control"
+dietmetapair[grepl("02-", dietmetapair$host_subject_id), "dmt"] = "Control"
+dietmetapair$site = gsub("Edinburgh ARC|edinburgh_arc", "Edinburgh", dietmetapair$site)
+dietmetapair$site = gsub("fleni|FLENI", "Buenos Aires", dietmetapair$site)
+dietmetapair$site = gsub("mssm|MSSM", "New York", dietmetapair$site)
+dietmetapair$site = gsub("UCSF", "San Francisco", dietmetapair$site)
+dietmetapair$site = gsub("bwh|BWH", "Boston", dietmetapair$site)
+dietmetapair$site = gsub("UPitt|pittsburgh", "Pittsburgh", dietmetapair$site)
+dietmetapair$site = gsub("san_sebastian", "San Sebastian", dietmetapair$site)
+dietmetapair$site = gsub("ucsd", "San Diego", dietmetapair$site)
+dietmetapair$site = gsub("upenn", "Pennsylvania", dietmetapair$site)
+
+
+WriteXLS(dietmetapair, "data/Dietary_1480samples_paired_metadata.xlsx")
+
+# merge dietmetapair and seqmeta
+# Sequencing samples from 7 sites only, no UPenn, no ucsd
+load("../iMSMS_round2/rdata/seqmeta.rda")
+dietseqmeta = dietmetapair[dietmetapair$host_subject_id %in%  seqmeta$iMSMS_ID, ] 
+test = samplePaired(dietseqmeta$host_subject_id, site ="All")
+test = test[order(test$type),]
+dietseqmeta = dietmetapair[match(test$sampleid, dietmetapair$host_subject_id), ]
+dietseqsite = split(dietseqmeta,f = dietseqmeta$site)
+dietseqsite[[8]] = dietseqmeta
+names(dietseqsite)[8] = "All"
+
+for(name in names(dietseqsite)){
+  dietpairsum[[name]] = dietpairsum[[name]][,match(dietseqsite[[name]]$host_subject_id, colnames(dietpairsum[[name]]))]
+}
+dietpairsumall = dietpairsum
+# samples have diet summary and HEI
+ dietpairsum = lapply(dietpairsum,function(x){
+   x[,colnames(x) %in% heiseq$iMSMS_ID]
+ })
+```
+# Summary Metadata(seq & diet)
+```{r}
+mybarplot = function(data, ylim.max = 1500,seq.by = 300, out.file= "results/Enrollment_RedCap_data_summary1.pdf"){
+  color.function= colorRampPalette(c( "#104E8B","#CCCCCC") )
+  color.ramp =color.function( n = nrow(data))
+  bar = barplot(as.matrix(data), beside = T,border =NA, ylab = "Count", ylim = c(0, ylim.max), yaxt = "n", col = color.ramp)
+  axis(2, seq(0,ylim.max, by = seq.by),tck = -.015)
+  text(x = bar, y =as.matrix(data) , 
+     labels = apply(data,c(1,2),function(x) {paste(x, "",sep="")}), 
+     pos = 3, cex = 0.6, col = "black")
+  legend("right", rownames(data), border =NA, bty = "n", fill = color.ramp)
+  dev.copy2pdf(file = out.file,width =8, height =5, useDingbats=F)
+}
+
+summary1 = read.xls("data/Dietary_samples_pairs_summary.xlsx",sheet =2, head=T,as.is=T,row.names=1)
+summary1 = summary1[-nrow(summary1),]
+mybarplot(summary1, ylim = 1000,seq.by =200, out.file = "results/Enrollment_RedCap_data_summary_test.pdf")
+
+summary2 = read.xls("data/Dietary_samples_pairs_summary.xlsx",sheet =3, head=T,as.is=T,row.names=1)
+summary2 = summary2[-2,]
+mybarplot(summary2, ylim = 1000,seq.by =200, out.file = "results/Sequencing_data_summary_test.pdf")
+
+summary3 = read.xls("data/Dietary_samples_pairs_summary.xlsx",sheet =4, head=T,as.is=T,row.names=1)
+
+summary3 = summary3[-c(3,4),]
+mybarplot(summary3, ylim = 1000,seq.by =200, out.file = "results/Sequencing_diet_data_summary_no_survey.pdf")
+
+
+```
+
+## Metadata summary
+```{r}
+#select variables to merge the patients
+vars = colnames(heiseqmeta)
+vars.select = c("iMSMS_ID","age","sex","disease_course","disease",
+                "bmi","treatment_status",
+                "treatment_type", "uGMSSS", "site")
+
+#summarize the variables in each site data without considering sex
+
+summary_withoutsex = function(x, group){
+  disease.name = unique(x[, group])
+  disex.data = sapply(disease.name, function(z){
+    y = nrow(x[x[,group] %in% z,])
+    y
+  })
+  mean.fun = function(data, name, group, variable){
+    y = data[data[,group] %in% name,variable]
+    y = y[y!=""]
+    y = mean(as.numeric(y),na.rm =T)
+    y = format(as.numeric(y), digits = 3)
+    y
+  }
+  means = sapply(c("age", "bmi", "uGMSSS"), function(z){
+    sapply(disease.name, function(t) {
+        mean.fun(data = x, name =t, group=group, variable =z)
+    })
+  })
+  
+  IQR.fun = function(data, name, group, variable){
+    r1= quantile(as.numeric(data[data[,group] %in% name,variable]),na.rm =T, 1/4)
+    r2= quantile(as.numeric(data[data[,group] %in% name,variable]),na.rm =T, 3/4)
+    r1 = format(as.numeric(r1), digits = 3)
+    r2 = format(as.numeric(r2), digits = 3)
+    r = paste("(", r1,",",r2,")",sep="")
+    r
+  }
+  iqrs = sapply(c("age", "bmi","uGMSSS"), function(z){
+    sapply(disease.name, function(t) {
+        IQR.fun(data = x, name =t, group=group, variable =z)
+    })
+  })
+
+  others = sapply(c("sex", "treatment_status", "treatment_type", "site"), function(z){
+    res = table(x[,c(group,z)])
+    res = t(as.matrix(res))
+    res
+  })
+  data2 = do.call("rbind", others)
+  data1 = rbind(t(means)[,colnames(data2)], t(iqrs)[,colnames(data2)])
+  data = rbind(data1, data2)
+  data
+}
+
+data1 = summary_withoutsex(heiseqmeta, group = "disease")
+data2 = summary_withoutsex(heiseqmeta, group = "pms")
+
+data = cbind(data1, data2)
+write.table(data, "results/HEI_517pairs/Diet_517pairs_metadata_summary2.txt",quote=F,sep="\t",row.names=T)
+
+#seqmeta2 = seqmeta
+#seqmeta2$disease_course = gsub("CIS", "RRMS", seqmeta2$disease_course)
+#data2 = summary_withoutsex(seqmeta2, group = "disease_course")
+
+#seqmeta[x$treatment_type %in% c("avonex","rebif","plegridy","betaseron"),"treatment_type"] = "interferon"
+```
+
+# Merge each diet with metadata
+```{r}
+varnames = rownames(dietpairsum[[1]])
+dietMeta =lapply(varnames, function(x){
+  y = merge(t(dietpairsum[["All"]][rownames(dietpairsum[["All"]]) %in% x,]), seqmeta, by= "row.names")
+  rownames(y) = y[,1]
+  y = y[,-1]
+  y
+})
+names(dietMeta) = varnames
+
+```
+
+## Box plot the dietMeta
+```{r}
+
+source("scripts/dietBoxplot.R")
+y.groups = c("allergies","anxiety","asthma","depression","diet_no_special_needs","dmt", "education", "otc_meds", "pets","probiotics","sex", "site", "smoke")
+
+for(y.group in y.groups){
+  dietBoxplot(data =dietMeta, x.group = "pms", y.group = y.group,plot.type = "jitterplot", out.dir = "results/HEI_517pairs/Boxplot_diet_sum/", jitterdodge = 0.2,width =4.5, height = 4)
+  dietBoxplot(data =dietMeta, x.group = "pms", y.group = y.group,plot.type = "boxplot", out.dir = "results/HEI_517pairs/Boxplot_diet_sum/",width =4.5, height = 4 )
+}
+
+
+
+# usage: dietBoxplot(data = dietsitesum, x.group = "site", y.group = "disease", out.dir = "results/Boxplot_diet_sum/"); dietBoxplot(data = dietsitesum, x.group = "disease", y.group = "site", out.dir = "results/Boxplot_diet_sum/")
+
+source("scripts/dietBox.R")
+## plot Female and Male
+for(i in 1:length(varnames)){
+  datain = dievar2[[i]]
+  colnames(datain)[9] = "Value"
+  datain$Value = 2^datain$Value
+  #optional to add FvsM in all samples 
+  datain2 = datain
+  datain2$Group = "All"
+  datain = rbind(datain, datain2)
+  
+  datain$Group = factor(datain$Group, levels = c("HC","MS","All"))
+  datain$site = factor(datain$sex, levels= c("F","M"))
+  p = ggplot(data = datain, aes(x=Group, y=Value)) + geom_boxplot(aes(fill=sex))
+  p = p + xlab("Disease course") + ylab(varnames[i])
+  ggsave(file =paste(varnames[i],".pdf",sep=""), p, width =6, height =5)
+}
+
+###barplot
+if(!require(plyr)){
+  install.packages("plyr")
+}
+summary = ddply(diffall, .(disease,Pair), summarize, 
+                mean = mean(mean(dis,na.rm =T)), sd = sd(dis, na.rm=T))
+p = ggplot(data = summary, aes(x=disease, y=mean,fill=Pair)) + 
+  geom_bar(stat = "identity",position=position_dodge(), color ="black")+
+  geom_errorbar(aes(ymin = mean, ymax=mean+sd), width=.2,
+                position=position_dodge(.9))
+p = p + xlab("Disease course") + ylab("Bray-Curtis dissimilarity")
+ggsave(file =paste(varnames[i],".pdf",sep=""), p)
+```
+
+###Correlation of diversity and HEI
+```{r}
+diversity.file ="~/Dropbox/1.project/iMSMS_round2/results/QIITA/deblur_otus/Merge_tow_batches/Averaged/diversity/shannon/data/alpha-diversity.tsv"
+shannon = read.table(diversity.file, head=T,as.is=T,sep="\t")
+colnames(shannon)[1] = "iMSMS_ID"
+#diversity = merge(shannon, chao1, by = "iMSMS_ID")
+diversity = shannon
+diversity.seqmeta = merge(diversity, seqmeta, by ="iMSMS_ID")
+
+diversity.seqmeta.ms = split(diversity.seqmeta, diversity.seqmeta$disease)
+
+diversity.seqmeta.ms =lapply(diversity.seqmeta.ms,function(x){
+  rownames(x)  =x[,1] 
+    data2 = heilist[[4]]
+   names = intersect(rownames(x), rownames(data2))
+  x = x[match(names, rownames(x)),]
+  data2 = data2[match(names, rownames(data2)),]
+  data = cbind(x[,"shannon"], data2[,1])
+  data = data.frame(data,stringsAsFactors = F)
+  rownames(data) = names
+  colnames(data) = c("shannon", "HEI")
+  data
+})
+for(i in 1:2){
+  diversity.seqmeta.ms[[i]]$disease = names(diversity.seqmeta.ms)[i]
+}
+data= do.call("rbind",diversity.seqmeta.ms)
+
+ ggscatter(data, y="shannon",x = "HEI2015_TOTAL_SCORE",color = "disease", add = "reg.line", conf.int =T,cor.coef = TRUE, cor.method = "pearson",xlab = "Healthy eating index (2015)", ylab="Shannon index",size =1,palette =c("Control"= "#74add1", "MS"= "#a50026"))
+ 
+
+```
+
+
+#PERMANOVA adonis
+## Diet explained metadata
+```{r}
+cofounder.anova = read.xls("data/Dietary_1092samples_paired_metadata.xlsx",sheet =2, as.is=T, head=T)
+cofounder.anova = cofounder.anova[cofounder.anova$host_subject_id %in% dietseqmeta$host_subject_id,]
+cofounder.anova$age = as.numeric(cofounder.anova$age)
+# cofounder.anova$disease_control = gsub("RRMS_|PMS_","", cofounder.anova$disease_control)
+# cofounder.anova = cofounder.anova[cofounder.anova$host_subject_id %in% colnames(dietpairsum[[6]]), ]
+dietpairsum = lapply(dietpairsum,function(x){
+  colnames(x) = gsub("-", "_", colnames(x))
+  x
+})
+
+dietdata = dietpairsum[[8]][,cofounder.anova$host_subject_id]
+
+abun.filter = lapply(list(dietdata), function(x){y = x[,match(cofounder.anova$host_subject_id, colnames(x))]; y})
+abun.filtert = lapply(abun.filter,function(x){ y =t(x); y})
+species = abun.filtert[[1]]
+names = colnames(cofounder.anova)
+names = names[-1]
+
+adonis.res = list()
+for(i in 1:length(names)){
+  cofounder2 = cofounder.anova[!is.na(cofounder.anova[,i+1]) & cofounder.anova[,i+1] != "", ]
+  abun = species[rownames(species) %in% cofounder2$host_subject_id, ]
+  dis = vegdist(abun, method = "jaccard")
+  adonis.res[[i]] = adonis(as.formula(paste("dis ~",names[i], sep = "")), data = cofounder2)
+}
+
+names(adonis.res) = c(names)
+
+# extract the R2 and Pvalue
+extra.num = 0 # number of above house site covariate
+
+result = matrix(NA, nrow = length(names)+extra.num, ncol =2)
+for(i in 1:(length(names)+extra.num)){
+  result[i,1] = adonis.res[[i]]$aov.tab$R2[1]
+  result[i,2] = adonis.res[[i]]$aov.tab$`Pr(>F)`[1]
+}
+
+rownames(result) = c(names)
+colnames(result) = c("R2", "Pvalue")
+result = data.frame(result, stringsAsFactors = F)
+result$Padjust = p.adjust(result$Pvalue, method = "fdr")
+WriteXLS(result, "results/permanova/permanova_dietary_jaccard_dissimilarity_new.xlsx",row.names =T)
+
+# result=read.xls("results/permanova/permanova_dietary_jaccard_dissimilarity_new.xlsx",sheet = 1, head=T,as.is=T)
+result$Term = rownames(result)
+dir.create("results/permanova")
+termgroup = read.csv("data/Metaphonotyes_groups.csv",head=T,as.is=T,sep=";")
+result = merge(result, termgroup, by = "Term", all=TRUE)
+result = result[!is.na(result$Pvalue), ]
+
+presult = result[result$Pvalue < 0.05,]
+padj.result = result[result$Padjust < 0.05,]
+ggplot(result, aes(x = reorder(Term, R2),y=R2, fill = Group)) +
+  geom_bar(stat='identity') +
+  coord_flip() + ylab("Adonis R2") + xlab("") +
+  #geom_text(data = presult, aes(Term, R2),label="*", col= "black",nudge_y = 0.005, nudge_x = -0.15)+
+  geom_text(data = padj.result, aes(Term, R2),label="*", col= "black",nudge_y = 0.01,nudge_x = -0.15)
+
+ggsave(file = "results/permanova/Diet_Adonis_R2_barplot_simplified.pdf", width =7, height =6, useDingbats =F)
+```
+
+# Scatterplot the correlated diets with co-founding factors
+```{r}
+dietnames = rownames(dietpairsum[[8]])
+data = t(dietpairsum[[8]])
+data =cbind(data, dietseqmeta)
+data = data[data$disease_status != "" & !is.na(data$height) & data$height !="", ]
+data$height[296] = "170.6"
+# get paired samples only
+pairs = samplePaired(gsub("_", "-",data$host_subject_id), site = "All")
+pairs = pairs[order(pairs$type), ]
+data = data[match(pairs$sampleid, gsub("_", "-", data$host_subject_id)), ]
+
+require(ggpubr)
+colnames(data)[1:37] = xnames = paste("X",1:37,sep="")
+data$height = as.numeric(data$height)
+  msindex = seq(1, nrow(data),by =2)
+  hcindex = seq(2, nrow(data), by =2)
+  pvalue =list()
+  gplot =list()
+for(i in 1:37){
+  data[,i] = as.numeric(data[,i])
+  g=  ggscatter(data, y = xnames[i], x = "height",color= "disease_status", size = 1, paletto = "jco", add = "reg.line", conf.int = T, xlim = c(140, 225), palette =c("Control"= "#74add1", "MS"= "#a50026") )+ ylab(dietnames[i])+ stat_cor(aes(color = disease_status,label = paste(..r.label..,"",sep="")), label.x = 140)+  theme(legend.position="none")
+  
+  hccor = cor(data[hcindex,i], data[hcindex, "height"], method = "pearson")
+  mscor = cor(data[msindex,i], data[msindex, "height"], method = "pearson")
+  require(psych)
+      p = paired.r(hccor,mscor, n = length(hcindex))$p
+      p =round(p, digits = 2)
+      pvalue[[i]] = p
+      gplot[[i]] = g+ ggtitle(paste(gsub("[(].*$", "", dietnames[i]), " (P = ",p, ")", sep=""))+theme(plot.title = element_text(size = 10))
+      #ggsave(g, file = gsub("%","%%",paste(dietnames[i], "_height_correlation.pdf",sep="")), width =5, height =5, useDingbats=F)
+}
+
+# plot only the significant ones 
+pvalue2= p.adjust(unlist(pvalue), method = "fdr")
+pindex = which(pvalue2 < 0.05)
+gplot2 = gplot[pindex]
+source("../iMSMS_Human_16S/scripts/multiplot.R")
+g2 = multiplot(plotlist = gplot2, cols = 3)
+dev.copy2pdf(file = "results/Pearson_cor_height/Significant_diet_weights_HC_MS_fdr.pdf", width =6, height =3, useDingbats =F)
+
+```
+
+## Microbiota dissimilarity explained by diet
+```{r}
+# usage: dietAdonis(diet.genus = taxrel[[5]], diet.diet= dietpairsum[[6]],term.file =  "results/9.2Dietary_questionnaires181217/Diet_variables_category_summed_groups.csv",out.file = "results/9.2Dietary_questionnaires181217/Genus_diet_summed_adonis_H.pdf",width = 7, height =5, horizontal =T)
+dietAdonis = function(diet.genus =  taxrel[[5]], diet.diet= dietpair[[6]], term.file = "results/9.2Dietary_questionnaires181217/Diet_variables_category_groups.csv", out.file = "results/9.2Dietary_questionnaires181217/Genus_diet_summed_adonis.pdf", width = 7, height = 5, horizontal =TRUE){
+  #filter low abundant genera
+  diet.genus = data.frame(t(diet.genus[,colnames(diet.diet)]), stringsAsFactors = F)
+  diet.diet = t(diet.diet)
+  # adonis test
+  adonis.res = list()
+  names =colnames(diet.diet)
+  source("scripts/mygsub.R")
+  library(tools)
+  names2 = toTitleCase(names)
+  names2 =  mygsub(c(" ", "[(].*[)]", "%", ",", "-"),rep("", 5), names2)
+  
+  colnames(diet.diet) = names2
+  diet.diet = data.frame(diet.diet, stringsAsFactors = F)
+  for(i in 1:length(names2)){
+    dis = vegdist(diet.genus, method = "bray")
+    adonis.res[[i]] = adonis(as.formula(paste("dis ~",names2[i], sep = "")), data = diet.diet)
+  }
+  names(adonis.res) = names
+  
+  result = matrix(NA, nrow = length(names), ncol =2)
+  for(i in 1:(length(names))){
+    result[i,1] = adonis.res[[i]]$aov.tab$R2[1]
+    result[i,2] = adonis.res[[i]]$aov.tab$`Pr(>F)`[1]
+  }
+  
+  rownames(result) = c(names)
+  colnames(result) = c("R2", "Pvalue")
+  result = data.frame(result, stringsAsFactors = F)
+  result$Padjust = p.adjust(result$Pvalue, method = "fdr")
+  
+  # write.csv(result, "Adonis_R2.csv", )
+  # result=read.csv("Adonis_R2.csv",head=T,as.is=T,row.names = 1)
+  result$ID = rownames(result)
+  termgroup = read.csv(term.file,head=T,as.is=T)
+  for(i in 1:nrow(result)){
+    result$Group[i] = termgroup[termgroup$Term == result$ID[i], "Group"]
+  }
+  
+  presult = result[result$Pvalue < 0.05,]
+  padj.result = result[result$Padjust < 0.05,]
+  if(horizontal){
+    ggplot(result, aes(x = reorder(ID, R2),y=R2, fill = Group)) +
+      geom_bar(stat='identity') +
+      ylab("Adonis R2") + xlab("") +
+      geom_text(data = presult, aes(ID, R2),label="*", col= "black",nudge_y = 0.005, nudge_x = -0.2)+
+      geom_text(data = padj.result, aes(ID, R2),label="*", col= "red",nudge_y = 0.01,nudge_x = -0.2)
+  }else{
+    ggplot(result, aes(x = reorder(ID, R2),y=R2, fill = Group)) +
+      geom_bar(stat='identity') +
+      coord_flip() + ylab("Adonis R2") + xlab("") +
+      geom_text(data = presult, aes(ID, R2),label="*", col= "black",nudge_y = 0.005, nudge_x = -0.2)+
+      geom_text(data = padj.result, aes(ID, R2),label="*", col= "red",nudge_y = 0.01,nudge_x = -0.2)
+  }
+  
+  ggsave(file = out.file, useDingbats =F,width = width, height =height)
+  if(nrow(padj.result) != 0){
+    diet.terms = rownames(padj.result)
+  }else{
+    diet.terms = rownames(presult)
+  }
+  diet.terms
+}
+
+```
+
+# Household dissimilarity
+```{r}
+# Household comparison within each site
+dietmetapair.disease = dietseqmeta[! (dietseqmeta$disease_course =="" | dietseqmeta$sex ==""), ]
+dietmetapair.disease = samplePaired(gsub("_", "-", dietmetapair.disease$host_subject_id), site ="All")
+dietmetapair.disease = dietmetapair.disease[order(dietmetapair.disease$type), ]
+dietmetapair.disease = dietseqmeta[match(gsub("-","_",dietmetapair.disease$sampleid), dietseqmeta$host_subject_id),]
+
+site.cond = split(dietmetapair.disease, f = dietmetapair.disease$site)
+site.otu = lapply(site.cond, function(x){
+  y = dietpairsum[[8]][,match(x[,1], colnames(dietpairsum[[8]]))]
+  y
+})
+
+diffall = list()
+sites = names(lapply(site.cond, function(x){unique(x$site)}))
+source("../iMSMS_Human_16S/scripts/BC_dissimilarity.R")
+for(i in c(1:4, 6:7)){
+  diffall[[i]] = BC_dissimilarity(site.otu[[i]], condition= site.cond[[i]],site =F, mergems =F, sex =TRUE, method = "jaccard")
+  diffall[[i]]$site = sites[i]
+}
+diffhouse = do.call("rbind", diffall)
+diffhouse$disease = factor(diffhouse$disease, levels = c("CIS", "RRMS","PPMS", "SPMS"))
+
+# add HC-MS paires in different sites
+data = dietpairsum[[8]][,match(dietmetapair.disease$host_subject_id, colnames(dietpairsum[[8]]))]
+diffms2 = BC_dissimilarity(data, condition=dietmetapair.disease ,site =F, mergems =F, sex =TRUE, method = "jaccard")
+diffhousesite = diffms2[!diffms2$dis %in% diffhouse$dis,]
+diffhousesite$Pair = as.character(diffhousesite$Pair)
+diffhousesite$Pair = gsub("Unpaired", "UnpairedSite", diffhousesite$Pair)
+diffhousesite$site = "All"
+diffhouse2 = rbind(diffhouse, diffhousesite)
+
+####### plot the chao diff #####
+diffhouse2 = diffhouse2[!is.na(diffhouse2$disease), ]
+
+diffhouse.pms=diffhouse2
+diffhouse.pms$disease = gsub("PPMS|SPMS", "PMS", diffhouse2$disease)
+diffhouse.pms$disease  = factor(diffhouse.pms$disease , levels= c("RRMS","PMS"))
+p =  ggplot(data = diffhouse2, aes(x=disease, y=dis, fill = Pair)) + geom_boxplot(aes(fill =Pair), notch=T, position = position_dodge(0.76))+
+  theme_classic() +
+  #scale_color_brewer(palette="Dark2") +
+  scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9"))+
+  scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9"))
+p = p + xlab("") + ylab("Jaccard Distance")
+#p = p + xlab("Disease") + ylab("Euclidean distance")
+p
+ggsave(file = "results_PMS/Household_Bray–Curtis_dissimilarity_RRMS_PMS_site_colored.pdf", width =6, height =5, useDingbats =F)
+
+res.aov = aov(dis~Pair, data = diffhouse2[diffhouse2$disease == "RRMS", ])
+TukeyHSD(res.aov)
+```
+
+# 
+
+# RDA Redundancy analysis
+```{r}
+#usage: 
+# rda_analysis(diet.genus = taxrel[[5]], diet.diet = dietpair[[6]], diet.terms = diettermssum, plot.sample =T, col.list = col.list, condietpair = condietpair, group = "disease")
+# dev.copy2pdf(file = "results/9.2Dietary_questionnaires181217/High_abundant_genera_top10_Adnois_unsummed_diets_RDA.pdf", height =6, width =6, useDingbats =F)
+
+rda_analysis = function(diet.genus = taxrel[[5]], diet.diet = dietpair[[6]], diet.terms = diet.termunsum,plot.sample=FALSE, col.list = col.list, condietpair, group = "disease"){
+  diet.genus = data.frame(t(diet.genus[,colnames(diet.diet)]), stringsAsFactors = F)
+  diet.diet = t(diet.diet)
+  require("vegan")
+  rda.result = rda(diet.genus, diet.diet,scale =TRUE)
+  rdavalue = data.frame(summary(eigenvals(rda.result,model  ="constrained")))
+  rdavalue = c(rda1 =round(rdavalue[2,1]*100,digits = 1), rda2 = round(rdavalue[2,2]*100,digits = 1))
+  # check the most important dietary variables and microbes
+  rda.sample = rda.result$CCA$u
+  rda.genus = rda.result$CCA$v
+  rda.diet = rda.result$CCA$biplot
+  
+  # genus.top were selected by the abudnance heigher than 1% percentage
+  genus.top = colnames(diet.genus[, colMeans(diet.genus) > 0.01])
+  genus.top = genus.top[!grepl("g__$", genus.top)]
+  diet.top = rownames(rda.diet[order(rda.diet[,1]^2 + rda.diet[,2]^2 ,decreasing = T), ])[1:10]
+  diet.top = union(diet.terms, diet.top)
+  
+  rda.genus2 = rda.genus[rownames(rda.genus) %in% genus.top,1:2]
+  rda.diet2 = rda.diet[rownames(rda.diet) %in% diet.top,1:2]
+  
+  if(plot.sample){
+    groups = condietpair[match(rownames(rda.sample), condietpair$SampleID), group]
+    col = col.list[[group]][match(groups, names(col.list[[group]]))] 
+    plot(rda.sample[,1], rda.sample[,2],col =col,
+         xlim = c(min(rda.sample[,1], rda.genus2[,1], rda.diet2[,1]), max(rda.sample[,1], rda.genus2[,1], rda.diet2[,1])), 
+         ylim = c(min(rda.sample[,2], rda.genus2[,2], rda.diet2[,2]), max(rda.sample[,2], rda.genus2[,2], rda.diet2[,2])),pch = 16,
+         xlab = paste("RDA1", " (",rdavalue[1], "%)",sep=""), ylab = paste("RDA2", " (",rdavalue[2], "%)",sep=""))
+  }else{
+    plot(rda.genus2[,1], rda.genus2[,2], type='n',
+         #col = col.list[[group]][match(condietpair[,group], names(col.list[[group]]))], 
+         xlim = c(min(rda.genus2[,1], rda.diet2[,1]), max(rda.genus2[,1], rda.diet2[,1])), 
+         ylim = c(min(rda.genus2[,2], rda.diet2[,2]), max(rda.genus2[,2], rda.diet2[,2])),pch = 16,
+         xlab = paste("RDA1", " (",rdavalue[1], "%)",sep=""), ylab = paste("RDA2", " (",rdavalue[2], "%)",sep=""))
+  }
+  text(rda.diet2[,1],rda.diet2[,2], labels = gsub("^.*g__", "", rownames(rda.diet2)), cex = 0.8)
+  arrows(0,0, rda.diet2[,1],rda.diet2[,2], col = "black",length=0.05,angle=20, lwd =1.5)
+  text(rda.genus2[,1],rda.genus2[,2], labels = gsub("^.*g__", "", rownames(rda.genus2)), 
+       col ="darkgrey", cex = 0.8)
+  abline(h =0, v = 0, lty =2)
+  arrows(0,0, rda.genus2[,1],rda.genus2[,2], col = "darkgrey",length=0.05,angle=20, lwd =1.5)
+}
+```
+
+#association study with unlogged values
+```{r}
+standard = read.csv("results/9.1New_dietary/Diet_standards.csv",head=T,as.is=T)
+nvar = nrow(standard)
+varnames = standard$Category
+#count the samples
+counts = lapply(data, function(x){
+  countvar = list()
+  for(i in 1:nvar){
+    countvar[[i]] = matrix(NA,2,2)
+    colnames(countvar[[i]]) = c("MS","HC")
+    rownames(countvar[[i]]) =c(paste(varnames[i],"_less",sep=""), paste(varnames[i],"_more",sep=""))
+    y = x[rownames(x) %in% varnames[i],]
+    std =standard[standard$Category %in% varnames[i],"Criteria"]
+    countvar[[i]][1,1] = table(y[grepl("01-",names(y))] <= std)["TRUE"]
+    countvar[[i]][1,2] = table(y[grepl("02-",names(y))] <= std)["TRUE"]
+    countvar[[i]][2,1] = table(y[grepl("01-",names(y))] > std)["TRUE"]
+    countvar[[i]][2,2] = table(y[grepl("02-",names(y))] > std)["TRUE"]
+    countvar[[i]][is.na(countvar[[i]])] = 0
+  }
+  countvar
+})
+
+fisherresgreater = lapply(counts, function(x){
+  y = lapply(x, function(z){
+    test = fisher.test(z, alternative = "two.sided")
+    p = test$p.value
+    ratio = test$estimate
+    res = data.frame(Pvalue = p, OddsRatio = ratio, MS_less = z[1,1], HC_less = z[1,2],
+                     MS_more = z[2,1], 
+                     HC_more = z[2,2], 
+                     stringsAsFactors = F)
+    res
+  })
+  y2 = do.call("rbind", y)
+  rownames(y2) = varnames 
+  y2
+})
+names(fisherresgreater) = names(data)
+WriteXLS(fisherresgreater, "FisherTest_association_diets_MS.xlsx",row.names=T)
+
+######### Distribution of the dietary values #######
+sitefile = paste(sites, "_dietary_distribution",sep="")
+sapply(sitefile, dir.create)
+
+catnames = rownames(datasum[[1]])
+unitnames = c("%","mg","mcg","oz.","Kcal","g","%","mg","g","g","%","cups","teaspoons",
+              "mg","oz.","cups","g","mg","g","mg","g","%","g","","mg","%","cups","mg",
+              "oz.","cups","RAE","mg","mg","mcg","mg","mg","mg")
+plotnames = paste(catnames, paste("(",unitnames,")",sep=""), sep=" ")
+filenames = paste(catnames, ".pdf",sep="")
+
+#excute the norm.plot
+norm.plot(data =datasum, seperate =F, ms =F, 
+          path ="/Users/xiaoyuan/Documents/UCSF/3.Work_Report/20180122New_dietary_ques/Dietary_distribution_logged/",
+          log =TRUE)
+
+norm.plot = function(data = datasum, seperate =TRUE, ms =TRUE, 
+                     path = "/Users/xiaoyuan/Documents/UCSF/work_report/20171129Dietary_questionnaires/Dietary_distribution_unlogged/HC-MS_sites/",
+                     log =FALSE){
+  for(i in 1:length(data)){
+    if(log){
+      x = log(datasum[[i]],base = 2)
+    }else{
+      x = datasum[[i]]
+    }
+    
+    if(seperate){
+      setwd(paste(path, sitefile[i],sep=""))
+      if(ms){
+        dir.create("MS")
+        setwd(paste(path, sitefile[i],"/MS",sep=""))
+        x = x[,grepl("01-",colnames(x))]
+      }else{
+        dir.create("HC")
+        setwd(paste(path, sitefile[i],"/HC",sep=""))
+        x = x[,grepl("02-",colnames(x))]
+      }
+    }else{
+      setwd(paste(path, sitefile[i],sep=""))
+    }
+    for(n in 1:nrow(x)){
+      pdf(file =filenames[n], width =7, height =7)
+      z = as.numeric(x[n,])
+      z = z[is.finite(z)]
+      den = density(z)
+      hist(z, xlab=plotnames[n], main = "",probability = TRUE, 
+           ylim = c(0,max(den$y)+median(den$y)))
+      lines(den)
+      dev.off()
+    }
+  }
+}
+```
+
+```{r}
+######### Shapiro normal distribution test on the dietary data###########
+stest = function(data = datasum, log =TRUE, seperate=TRUE){
+  res = lapply(data, function(x){
+    if(log){
+      x= log(x)
+    }
+    if(seperate){
+      hc = x[,grepl("02-", colnames(x))]
+      ms = x[,grepl("01-", colnames(x))]
+      all = list(hc, ms)
+      testres = lapply(all, function(x){
+        pvalue = apply(x, 1, function(y){
+          z = as.numeric(y)
+          z = z[is.finite(z)]
+          shapiro.test(as.numeric(z))$p.value
+        })
+        pvalue
+      })
+      pall = do.call("cbind", testres)
+      pall
+    }else{
+      testres = apply(x, 1, function(y){
+        z = as.numeric(y)
+        z = z[is.finite(z)]
+        pvalue = shapiro.test(as.numeric(z))$p.value
+        pvalue
+      })
+      testres = data.frame(testres, stringsAsFactors = F)
+      testres
+    }
+  })
+}
+#excute the normal test 
+results = stest(datasum, log =T,seperate =F)
+
+if(!seperate){
+  for(i in 1:6){
+    colnames(results[[i]]) = sites[i]
+  } 
+} else {
+  for(i in 1:6){
+    colnames(results[[i]]) = paste(c("HC","MS"), sites[i],sep="_")
+  }
+}
+
+
+resultslog = do.call("cbind", results)
+```
+
+
+#PCA plot 
+```{r}
+source("scripts/pca_plot.R")
+for(group in c("disease_course","disease", "Site", "sex", "treatment_status")){pca_plot(dietpair[[6]], map = condietpair, legend = group, figType= "pca", width =6, height =5, label.size = 1.5,col.list = col.list, frame =T,out.file = paste("results/9.2Dietary_questionnaires181217/Diet_unsumed/PCA/", group, "_PCA_frame.pdf",sep=""))}
+
+for(group in c("disease_course","disease", "Site", "sex", "treatment_status")){pca_plot(dietpair[[6]], map = condietpair, legend = group, figType= "pca", width =6, height =5, label.size = 1.5,col.list = col.list, frame =F,out.file = paste("results/9.2Dietary_questionnaires181217/Diet_unsumed/PCA/", group, "_PCA.pdf",sep=""))}
+```
+
+#PCA plot by Vitamin C, sodium and cholesterol
+```{r}
+data = dietpairsum[[6]]
+data = data[rownames(data) %in% c("Sodium (salt) (mg)", "Vitamin C (mg)", "Cholesterol (mg)"), ]
+
+data = data[rownames(data) %in% termgroup[termgroup$Group %in% c("Antioxidants", "B-Vitamins","Minerals"), "Term"], ]
+
+data = data[rownames(data) %in% c("Vitamin C (mg)", "Sodium (salt) (mg)", "Bread, pasta, rice (1)", "Cholesterol (mg)","Vitamin E (mg)", "Niacin (mg)", "Saturated fat (g) as % of cals", "B1, B2 (mg)", "without potatoes (cups)"),]
+
+```
+
+
+
+#T-test the difference between case and control for the 44/37 (merged) variables
+```{r}
+ttest = function(data, paired =TRUE){
+  res = lapply(data, function(x){
+    # inf = apply(x, 1,function(y){ length(y[is.finite(y)])})
+    # x = x[inf >0,]
+    for(i in 1:nrow(x)){
+      ms = as.numeric(x[i,grepl("01[-]",colnames(x))])
+      hc = as.numeric(x[i,grepl("02[-]",colnames(x))])
+      if(paired){
+        msid = which(is.finite(ms))
+        hcid = which(is.finite(hc))
+        id = intersect(msid, hcid)
+        ms = ms[id]
+        hc = hc[id]
+        if(length(ms) >=3 & length(hc) >=3 ){
+          x$Ttest[i] = t.test(ms,hc, paired = TRUE)$p.value
+        }else{
+          x$Ttest[i] = NA
+        }
+      }else{
+        ms = ms[is.finite(ms)]
+        hc = hc[is.finite(hc)]
+        if(length(ms) >=3 & length(hc) >=3){
+          x$Ttest[i] = t.test(ms,hc)$p.value
+        }else{
+          x$Ttest[i] = NA
+        }
+        
+      }
+    }
+    testres = data.frame(ttest = x$Ttest, stringsAsFactors = F)
+    rownames(testres) = rownames(x)
+    testres
+  })
+  res
+}
+
+ttestres = ttest(datalog, paired =F)
+
+ttestres = do.call("cbind",ttestres)
+colnames(ttestres) = names(data)
+WriteXLS(ttestres, "Dietary_variables_ttest.xlsx",row.names=T)
+
+
+############# dietary condition data pairied and unpaired #########
+dietcond = read.xls("iMSMS_phenotypes_Feb2018_v1.xlsx",head=T,as.is=T)
+clnames = c("SampleID","Disease_Status","Sex","YOB","Disease_Course", "Stool_Sample_Dates","bmi",
+            "disease_course","relapse","nsaids","probiotics","avonex","rebif" ,"plegridy",
+            "betaseron","tysabri","copaxone","gilenya","tecfidera","cyclophasphamide")
+
+dietcond2 = dietcond[,clnames]
+
+#read Mt.Sinai meta data from Sneha
+mtnai= read.csv("MtSinai_MicrobiomeClinicalQu_Prepared.csv",head=T,as.is=T)
+internames = intersect(colnames(mtnai), clnames)
+mtnai = mtnai[,internames]
+mtnai$Sex = ifelse(mtnai$Sex =="1", "M", ifelse(mtnai$Sex =="2","F", mtnai$Sex))
+mtnai$disease_course= ifelse(mtnai$disease_course == "2", "RRMS",
+                             ifelse(mtnai$disease_course =="3", "SPMS", 
+                                    ifelse(mtnai$disease_course == "4", "PPMS", mtnai$disease_course)))
+dietcond2 = dietcond2[,internames]
+clrecords=rbind(dietcond2, mtnai)
+
+condpair2= lapply(condpair, function(x){
+  colnames(x)[1] = "SampleID"
+  y = merge(x, clrecords, by ="SampleID")
+  y
+})
+
+### remove the samples without  sex information
+condpair3 = lapply(condpair2, function(x){
+  y = x[!is.na(x$Sex), ]
+  y = x[!(x$disease == "MS" & x$disease_course ==""), ]
+  y$disease_course = gsub("CIS","RRMS", y$disease_course)
+  y$disease_course = gsub("PRMS","PPMS", y$disease_course)
+  y$disease_course = ifelse(y$disease == "HC","Control", y$disease_course)
+  y
+})
+
+########make paired dietary samples
+mssamples = lapply(condpair3[1:5], function(x){y = x$SampleID; y = y[grepl("01-",y)]})
+hcsamples = lapply(condpair3[1:5], function(x){y = x$SampleID; y = y[grepl("02-",y)]})
+# hcsamples are less than ms samples
+mssamples2 = lapply(hcsamples, function(x){y = gsub("02-","01-",x); y})
+for(i in 1:length(mssamples)){
+  mssamples2[[i]] = mssamples[[i]][mssamples[[i]] %in% mssamples2[[i]]]
+}
+
+hcsamples = lapply(mssamples2, function(x){y = gsub("01-","02-", x);y})
+
+#construct paired condition
+condpair = list()
+for(i in 1:5){
+  data1 = condpair3[[i]][match(mssamples2[[i]],condpair3[[i]]$SampleID),]
+  data1$type = 1:nrow(data1)
+  data2 = condpair3[[i]][match(hcsamples[[i]],condpair3[[i]]$SampleID),]
+  data2$type = 1:nrow(data2)
+  condpair[[i]] = rbind(data1, data2)
+}
+
+condpair[[6]] = do.call("rbind", condpair[1:5])
+names(condpair) = names(condpair3)
+WriteXLS(condpair, "Diet_condition_paired_samples.xlsx",row.names=F)
+
+dietdatapair = list()
+for(i in 1:6){
+  dietdatapair[[i]] = outpair[[i]][, condpair[[i]]$SampleID]
+}
+names(dietdatapair) = names(outpair)
+WriteXLS(dietdatapair,"Dietary_data_summary_paired.xlsx",row.names=T)
+
+```
+
+#T-test the difference of HEI components
+```{r}
+hei2015 = heiseq[,c(1,33:46)]
+hei2015$HEIY_Fruit = hei2015$HEIY3_TOTALFRUIT + hei2015$HEIY4_WHOLEFRUIT
+
+# vegatables include total vegetables and 'green and beans'
+hei2015$HEIY_VEGE = hei2015$HEIY1_TOTALVEG + hei2015$HEIY2_GREEN_AND_BEAN
+hei2015$HEIY_PROT = hei2015$HEIY7_TOTPROT + hei2015$HEIY8_SEAPLANT_PROT
+
+
+hei2015.control = hei2015[hei2015$iMSMS_ID %in% seqmeta[seqmeta$disease == "Control",1],]
+hei2015.ms = hei2015[hei2015$iMSMS_ID %in% seqmeta[seqmeta$disease == "MS",1],]
+
+hei2015.control$household= gsub("01-|02-", "", hei2015.control$iMSMS_ID)
+hei2015.ms$household= gsub("01-|02-", "", hei2015.ms$iMSMS_ID)
+hei2015.ms= hei2015.ms[match(hei2015.control$household, hei2015.ms$household),]
+
+cmps = c("HEIY_Fruit", "HEIY_VEGE", "HEIY5_WHOLEGRAIN", "HEIY6_TOTALDAIRY", "HEIY_PROT","HEIY9_FATTYACID", "HEIY10_SODIUM","HEIY11_REFINEDGRAIN","HEIY12_ADDSUG" ,"HEIY13_SFA")
+
+ttestres = data.frame(diet= cmps, pvalue =NA, stringsAsFactors = F)
+for(cmp in cmps){
+  res = t.test(hei2015.control[,cmp], hei2015.ms[,cmp], paired = T)
+  ttestres[ttestres$diet == cmp, 2] = res$p.value
+}
+ttestres$fdr = p.adjust(ttestres$pvalue, method ="fdr")
+
+# boxplot the differential components
+hei2015.seqmeta = merge(hei2015,seqmeta, by ="iMSMS_ID")
+
+plot.cmps= c("HEIY_Fruit", "HEIY_VEGE","HEIY9_FATTYACID","HEIY11_REFINEDGRAIN")
+data = hei2015.seqmeta[,c("disease", plot.cmps)]
+
+data2= melt(data)
+ggplot(data = data2, aes_string(x= "variable", y = "value", color = "disease"))+  geom_jitter(position=position_jitterdodge(0.2))+scale_color_manual(values= c("Control" = "#74add1", "MS" = "#a50026"))+ geom_boxplot(fill =NA, color= "black")+ ylab("Food points")
+
+# barplot
+ meta2 = split(data, data[,"disease"])
+average.diff = lapply(meta2, function(x){
+      dt = data[data$disease %in% x$disease,]
+      avg = apply(dt[,2:5], 2, mean)
+      sem = apply(dt[,2:5], 2, function(x) {sd(x)/sqrt(length(x))})
+      smr = data.frame(mean = avg, sem =sem, group = unique(x[,"disease"]),stringsAsFactors = F)
+      rownames(smr) = colnames(dt)[2:5]
+      smr$diet = rownames(smr)
+      smr
+    })
+    average.diffs=do.call("rbind", average.diff)
+     
+ ggplot(average.diffs, aes(x=diet, y= mean, fill = group )) +
+      geom_bar(stat='identity',position="dodge") +
+      geom_errorbar(aes(ymin=mean-sem, ymax=mean+sem), width=.2,
+                    position=position_dodge(.9))+
+      ylab("Food points") + xlab("")+
+      scale_fill_manual(name =NULL, values = c("Control" = "#74add1", "MS" = "#a50026" ))
+ 
+```
+
+#Percentage pie chart
+```{r}
+#pie chart % calories
+term.file = "~/Dropbox/1.project/iMSMS_Human_16S/results/9.2Dietary_questionnaires181217/Diet_variables_category_summed_groups.csv"
+termgroup = read.csv(term.file,head=T,as.is=T)
+intake = termgroup[termgroup$Group == "Average intake","Term"]
+intake2 = intake[grepl("%", intake)]
+
+# pie of healthy individuals
+dietpiehhc = dietpairsum[["All"]][,grepl("02-",colnames(dietpairsum[["All"]]))]
+dietpiems = dietpairsum[["All"]][,grepl("01-",colnames(dietpairsum[["All"]]))]
+
+dietpie = dietpiems
+
+dietintake = dietpie[rownames(dietpie) %in% intake2, ]
+dietintakeall = apply(dietintake,1,mean)
+library("RColorBrewer")
+pie(dietintakeall, labels = gsub(" as % of cals", "", names(dietintakeall)), col= brewer.pal(n = 6, name = "PRGn"))
+dev.copy2pdf(file = "results/HEI_517pairs/Intake_percentage_pie/Intake_HHC_samples.pdf")
+library("plotrix")
+pie3D(dietintakeall, labels = gsub(" as % of cals", "", names(dietintakeall)), col= brewer.pal(n = 6, name = "PRGn"))
+dev.copy2pdf(file = "results/HEI_517pairs/Intake_percentage_pie/Intake_HHC_samples3D.pdf")
+
+
+```
+# barplot the average intake
+```{r}
+# pie chart of value
+intake2 = intake[!grepl("%", intake)]
+intake2 = intake2[-1]
+dietdata = dietpairsum[[6]][rownames(dietpairsum[[6]]) %in% intake2, ]
+dietdata[2, ] = dietdata[2,]/1000
+rownames(dietdata)[2] = "Cholesterol (g)"
+dietdata.rel = lapply(list(dietdata), function(x){
+  sums = colSums(x)
+  for(i in 1:ncol(x)){
+    x[,i] = x[,i]/sums[i]
+  }
+  x
+})
+
+
+ab_plot = function(abundance= dietdata.rel[[1]], legend =TRUE, 
+                   group= condpairdiet, comp = "disease_course", levels = c("Control","RRMS","PMS")){
+  require(reshape)
+  groups = unique(group[,comp])
+  
+  if(length(groups) > 1){
+    sample = lapply(groups, function(x){
+      y = group[group[,comp] %in% x, 1]
+      y
+    })
+  }
+  
+  abun = lapply(sample, function(x){
+    if(length(x) > 1){
+      y = apply(abundance[,x],1,mean)
+      y = data.frame(y, stringsAsFactors = F)
+    } else{
+      y = abundance[,x,drop=F]
+    }
+    y
+  })
+  if(length(abun) > 1){
+    abun = do.call("cbind", abun)
+  }else{
+    abun = abun[[1]]
+  }
+  abun = data.frame(abun, stringsAsFactors = F)
+  colnames(abun) = groups
+  abun$Tax = row.names(abun)
+
+  if(!require("reshape")){
+    install.packages("reshape")
+  }
+  abundance = melt(abun,id.vars ="Tax")
+  abundance$value = as.numeric(as.character(abundance$value)) 
+  abundance = abundance[order(abundance$value, decreasing =T),]
+  abundance$Tax = factor(abundance$Tax, levels = unique(abundance$Tax))
+  
+  #define the colors
+  cl <- c(
+    "#C84248",  "#5F7FC7", "orange","#DA5724", "#508578", "#CD9BCD",
+    "#AD6F3B", "#673770"
+  )
+
+  if(!is.null(levels)){
+    abundance$variable = factor(abundance$variable, levels = levels)
+  }
+  bp = ggplot(abundance, aes(x = variable, y = value, fill = Tax))+
+    geom_bar(stat = "identity")+
+    scale_fill_manual(values = cl)+
+    xlab("")+
+    ylab("Relative abundance (%)")+
+    theme(panel.background = element_blank(),axis.line = element_line(colour = "black"))
+  if(legend){
+    bp
+  } else{
+    bp + theme(legend.position="none")
+  }
+  bp
+  #abundance
+}
+
+
+```
+
+
+# Correlation plot for each diet 
+```{r}
+CorrePlot = function(diet = dietpairsum[[6]], condition = condpairdiet, mergems = TRUE){
+  if(mergems){
+    group = "disease_course"
+    condition$disease_course = gsub("RRMS|PMS", "MS", condition$disease_course)
+  }else{
+    group = "disease_control"
+  }
+  diseases = ifelse(mergems,"MS", c("RRMS", "PMS"))
+  within = lapply(diseases, function(x){
+    data = list()
+    if(!mergems){
+      condition = condition[condition[,group] %in% c(x, paste(x, "Control",sep="_")), ]
+    }
+    diet = diet[,match( condition[,1], colnames(diet))]
+    dietpaired = data.frame(HC = rep(NA, ncol(diet)/2), MS = rep(NA, ncol(diet)/2), Group ="Within house", Disease = x)
+    for(i in 1:nrow(diet)){
+      for(n in 1:(ncol(diet)/2)){
+        dietpaired[n,"HC"] = diet[i,n+1]
+        dietpaired[n,x] = diet[i,n]
+      }
+      data[[i]] =dietpaired
+    }
+    names(data) = rownames(diet)
+    data
+  })
+  
+  
+  between = lapply(diseases, function(x){
+    data = list()
+    index1 = which(condition[,group] ==x)
+    index2 = index1+1
+    comp = expand.grid(index2, index1)
+    #filter the same gender
+    if(sex){
+      comp = comp[condition[comp$Var1,"sex"] != condition[comp$Var2,"sex"],]
+    }
+    indexdiff = apply(comp,1,function(x){x[1] - x[2]})
+    comp = comp[!(indexdiff == 1),]
+    dietunpaired = data.frame(HC = rep(NA, length(index1)), MS = rep(NA, length(index1)), Group = "Between houses", Disease =x)
+    for(i in 1:nrow(diet)){
+      for(n in 1:length(index1)){
+        index = comp[comp$Var1 == 2*n,"Var2"]
+        index = sample(index, 1)
+        dietunpaired[n,"HC"] = diet[i, 2*n]
+        dietunpaired[n,"MS"] = diet[i, index]
+      }
+      data[[i]] = dietunpaired
+    }
+    names(data) = rownames(diet)
+    data
+  })
+  names(within) = names(between) = diseases
+  
+  alldata = lapply(diseases, function(x){
+    data = list()
+    for(i in 1:length(within[[x]])){
+      data[[i]] = rbind(within[[x]][[i]], between[[x]][[i]])
+    }
+    data
+  })
+  g = list()
+  plist = list()
+  for(i in 1:nrow(diet)){
+     if(length(diseases) == 1){
+      g[[i]] = ggscatter(alldata[[1]][[i]], x = "HC", y = "MS", size =0.5,palette = "jco", add = "reg.line", conf.int = TRUE, color = "Group") + stat_cor(aes(color = Group,label = paste(..r.label..,"",sep="")), label.x = 3)+  theme(legend.position="none")
+      withcor = cor(alldata[[1]][[i]][alldata[[1]][[i]]$Group == "Within house","HC"],alldata[[1]][[i]][alldata[[1]][[i]]$Group == "Within house","MS"])
+      betcor = cor(alldata[[1]][[i]][alldata[[1]][[i]]$Group == "Between houses","HC"],alldata[[1]][[i]][alldata[[1]][[i]]$Group == "Between houses","MS"])
+      require(psych)
+      p = paired.r(withcor,betcor, n = 120)$p
+      p =round(p, digits = 2)
+      g[[i]] = g[[i]] + ggtitle(paste(gsub("[(].*$", "", rownames(diet)[i]), " (P = ",p, ")", sep=""))+theme(plot.title = element_text(size = 10))
+      plist[i] = p
+  }
+  }
+
+source("scripts/multiplot.R") 
+  g2 = multiplot(plotlist = g, cols =6)
+}
+
+
+```
+
+# scatterplot of the Fisher's associated diets
+```{r}
+dieterms = c("Vitamin C", "Vitamin E", "without potatoes", "B1, B2", "Cholesterol","Niacin", "Sodium", "Bread, pasta, rice","Saturated fat (g) as % of cals")
+
+dieterms2 = gsub(" |[,]|[%]|[(].[)]", "", dieterms)
+dietall = cbind(condietpair, t(dietpairsum[[6]]))
+colnames(dietall) = gsub(" [(].*[)]", "", colnames(dietall))
+colnames(dietall) = gsub(" |[,]|[%]|[(].[)]", "",colnames(dietall))
+
+standard = read.csv("results/9.1New_dietary/Diet_standards.csv",head=T,as.is=T)
+standard$Category = gsub(" |[,]|[%]|[(].[)]", "", standard$Category)
+
+
+g= list()
+for(i in 1:9){
+ g =ggplot(data = dietall, aes_string(x= "disease", y = dieterms2[i], color = "disease") )+geom_line(aes(group = household),color ="grey")+ geom_jitter(position=position_jitter(0.04))+scale_color_manual(values= color.list[["disease"]])+ ggtitle(dieterms[i])+ geom_point(aes(x = dietall$disease, y = standard[standard$Category == dieterms2[i], "Criteria"]), pch =17, color ="black")
+  ggsave(g, file = paste("results/9.2Dietary_questionnaires181217/Diet_summed/", dieterms[i],"_jetterplot_paired.pdf",sep = ""), height=4, width =3.5, useDingbats=F)
+}
+library(gridExtra)
+
+```
+
+
+# Fisher's exact test
+```{r}
+standard = read.csv("results/9.1New_dietary/Diet_standards.csv",head=T,as.is=T)
+nvar = nrow(standard)
+standard$Category = gsub(" [(]salt[)]", "", standard$Category)
+varnames = standard$Category
+
+dietdata = dietpairsum[[6]]
+rownames(dietdata) = gsub(" [(].*[)]", "", rownames(dietdata))
+#count the samples
+counts = lapply(list(dietdata), function(x){
+  countvar = list()
+  for(i in 1:nvar){
+    countvar[[i]] = matrix(NA,1,4)
+    colnames(countvar[[i]]) = c("MS_less","HC_less", "MS_more", "HC_more")
+    rownames(countvar[[i]]) =varnames[i]
+    y = x[rownames(x) %in% varnames[i],]
+    std =standard[standard$Category %in% varnames[i],"Criteria"]
+    countvar[[i]][1,1] = table(y[grepl("01_",names(y))] <= std)["TRUE"]
+    countvar[[i]][1,2] = table(y[grepl("02_",names(y))] <= std)["TRUE"]
+    countvar[[i]][1,3] = table(y[grepl("01_",names(y))] > std)["TRUE"]
+    countvar[[i]][1,4] = table(y[grepl("02_",names(y))] > std)["TRUE"]
+    countvar[[i]][is.na(countvar[[i]])] = 0
+  }
+  countvar
+})
+
+
+fisherresgreater = lapply(counts, function(x){
+  y = lapply(x, function(z){
+    z = matrix(z, nrow =2, byrow =2)
+   less = fisher.test(z, alternative = "less")
+   less.p= less$p.value
+   greater = fisher.test(z, alternative = "greater")
+   greater.p = greater$p.value
+   ratio1= less$estimate
+   ratio2 = greater$estimate
+   res = data.frame(Pless = less.p,Pgreater = greater.p, OddsRatio1 = ratio1,OddsRatio2= ratio2, MS_less = z[1,1], HC_less = z[1,2],
+                    MS_more = z[2,1], 
+                    HC_more = z[2,2], 
+                    stringsAsFactors = F)
+   res
+  })
+  y2 = do.call("rbind", y)
+  rownames(y2) = varnames 
+  y2
+})
+res = fisherresgreater[[1]]
+res$pvalue = apply(res[,1:2],1, function(x){
+  if(x[1] <= x[2]){
+    y = x[1]
+  }else{
+    y = x[2]
+  }
+  y
+})
+  
+  
+#res$padj = p.adjust(res$Pvalue, method = "fdr")
+WriteXLS(res, "results/9.2Dietary_questionnaires181217/Diet_correlation_HC_MS/Fisher_items_correlation.xlsx", row.names=T)
+
+counts2= do.call("rbind", counts[[1]])
+counts2 = melt(counts2)
+counts2$group = gsub("_less|_more", "", counts2$X2)
+
+dieterms = c("Vitamin C", "Vitamin E",  "Cholesterol", "Meat, eggs, or beans")
+countsfilter = counts2[counts2$X1 %in% dieterms, ]
+
+countsfilter$X1= factor(countsfilter$X1, levels = dieterms)
+ggplot(data = countsfilter, aes(x = X1, y =value, fill = X2)) + scale_y_continuous(breaks =c(30,60,90,120), limits = c(0,120)) +geom_bar(stat="identity",position=position_dodge())
+ggsave(file = "results/9.2Dietary_questionnaires181217/Diet_correlation_HC_MS/Fisher_counts_barplot.pdf", width =5, height=5,useDingbats=F)
+
+```
+
+
+
+#log FC for the MS specific diets
+```{r}
+dieterms = c("Vitamin C", "Vitamin E", "without potatoes", "B1, B2", "Cholesterol","Niacin", "Sodium", "Bread, pasta, rice","Saturated fat (g) as % of cals")
+condietpair =read.csv("results/9.2Dietary_questionnaires181217/condietpair.csv", head=T,as.is=T,sep=";")
+dietdata = dietpairsum[[6]]
+rownames(dietdata) = gsub(" [(].*[)]$", "", rownames(dietdata))
+diff = matrix(NA, nrow(dietdata), ncol(dietpairsum[[6]])/2)
+dietdata = dietdata[,match(condietpair$SampleID, colnames(dietdata))]
+
+for(i in 1:(ncol(dietpairsum[[6]])/2)){
+  diff[,i] = dietdata[,2*i-1]/dietdata[,2*i]
+}
+rownames(diff) = rownames(dietdata)
+diff = data.frame(diff,stringsAsFactors = F)
+diff$Average = apply(diff, 1,mean, na.rm =T)
+diff$sd = apply(diff, 1, function(x){y = sd(x, na.rm=T)/sqrt(length(x))})
+
+
+diff2= diff[rownames(diff) %in% dieterms,c("Average","sd")]
+
+```
+
+# compare fooDB and nutritionquest
+```{r}
+foodb =read.csv("data/Questionnaires_FoodDB/FooDB_foods.csv",head=T,as.is=T)
+nutri = read.xls("data/Nutrition_question_variables.xlsx",sheet =1, head=T,as.is=T,sep=",")
+
+nutri$ID = gsub("^.* \xa0", "", nutri$ID)
+nutri= nutri[,1:4]
+nutri.list = split(nutri, f = nutri$Category)
+
+# match
+mp = list()
+mp =lapply(foodb$name, function(x){
+  x = paste(x, tolower(x), sep = "|")
+  y = nutri$Description[grepl(x, nutri$Description)]
+  y
+})
+names(mp) = foodb$name
+len = lapply(mp, length)
+index = which(len> 0 & len < 518)
+
+# read comparison file
+nutri.comp =read.table("data/Comparison_NutritionQuest_FooDB.txt",head=T,as.is=T,sep="\t")
+for(name in names(index)){
+  nutri.comp[grepl(paste(name, tolower(name), sep="|"), nutri.comp$Description), "InFoodDB"] = "TRUE"
+  rp = foodb[grepl(paste(name, tolower(name), sep="|"), foodb$name), "name"]
+  if(length(rp) > 1){
+    rp = paste(rp, collapse = ", ")
+  }
+  nutri.comp[grepl(paste(name, tolower(name), sep="|"), nutri.comp$Description), "FoodDB.Name"] = rp
+}
+
+
+nutri.comp$FooDB = ifelse(grepl(paste(names(index), collapse="|"), nutri.comp$Description), "TRUE", "FALSE")
+nutri.comp$FooDB.name = 
+  
+  
+write.csv(nutri.comp, "test.csv")
+
+# add foodb IDs to the dietary items in the nutrionQuest
+nts =read.xls("data/Questionnaires_FoodDB/NutritionQuest_FooDB_Comparison(sneha_myra).xlsx", sheet=2, head=T,as.is=T)
+foodb =read.xls("data/Questionnaires_FoodDB/NutritionQuest_FooDB_Comparison(sneha_myra).xlsx", sheet=3, head=T,as.is=T)
+
+
+nts$foodbid = sapply(nts$FoodDB.Name..the.food.included.in..FooDB..that.partially.completed.matched.to..Description.., function(x){
+  y = gsub(",", "|", x)
+  ids = foodb[grepl(y, foodb$name), "public_id"]
+  id = paste(ids, collapse = ", ")
+  id
+})
+```
+
+
+# Extract the NutritionQuest data for the HEI calculation
+```{r}
+# read the HEI samples
+hei1 = read.table("data/iMSMS_HEI-AHEI_07-31-2019/iMSMS_English FFQs_HEI-AHEI.txt",head=T,as.is=T)
+hei2 = read.table("data/iMSMS_HEI-AHEI_07-31-2019/iMSMS_Spanish FFQs_HEI-AHEI.txt",head=T,as.is=T)
+heisamp = rbind(hei1[,1:4], hei2[,1:4])
+heisamp$id = paste(heisamp$RESPONDENTID, heisamp$TODAYSDATE, sep ="_")
+
+# read the latest data
+path = "data/Questionnaires/20200608/"
+
+files = list.files(path = path, patter = "raw-data-and-results.txt", recursive = T,full.names = T)
+
+files= files[-c(7:9)]
+ids = lapply(files, function(x){
+  y = read.table(x, head=T,as.is=T,sep=";")
+  y
+})
+
+# different IDs
+names(ids)= c("714UCSF","715BWH","716MountSinai", "717Edinburgh","718BuenosAires", "764SanSebastian","765Pittsburgh", "813UPen", "873UCSD")
+
+diffids =lapply(names(ids),function(x){
+  data = ids[[x]]
+  data$id = paste(data$RESPONDENTID, data$TODAYSDATE,sep="_")
+  data = data[!data$id %in% heisamp$id, ]
+  data = data[,-ncol(data)]
+  data
+})
+names(diffids) = names(ids)
+lapply(names(ids), function(x){
+  write.table(diffids[[x]],paste("data/Questionnaires/20200608_HEI/" , x, "-raw-data-and-results.txt",sep="") ,quote=F,sep=";",row.names=F)
+})
+
+
+# update IDs with typo erros
+newids = unlist(lapply(diffids,function(x) x[,1]))
+newids = gsub("_$| ", "", newids)
+
+ 
+# change sample IDs in Mt. Sinai
+newids = mygsub(c("MS_IK","HC_IK","-C","-J","MS-IK"),c("71601-0","71602-0","","","71601-0"), newids)
+
+# change sample IDs for San Sebastian
+newids = mygsub(c("76401", "76402", "76403"),c("76401-", "76402-", "76403-"),newids)
+
+ # change sample name for Pittsburgh
+pitts =read.xls("data/Questionnaires/20200608/765Pittsburgh/Study_ID_convert20200608.xlsx",head=T,as.is=T)
+
+for(i in 1:newids){
+  newids[i] = ifelse(newids[i] %in% pitts$iMSMS.number, pitts[pitts$iMSMS.number ==newids[i], 2], newids[i])
+}
+newids = gsub("76502--0034", "76502-0034", newids)
+
+# change sample name for UPenn
+
+```
+
+
+# Match foodDB and diet components
+```{r}
+foods =read.xls("data/Questionnaires_FoodDB/~$NutritionQuest_FooDB_Comparison(sneha_myra).xlsx",sheet =2, head=T,as.is=T)
+foodb 
+
+```
+
+# Linear regression 
+```{r}
+source("../iMSMS_round2/scripts/linear_regression.R")
+source("../iMSMS_round2/scripts/linear_regression_plot.R")
+load("../iMSMS_round2_metagenomics/rdata/seqmeta.comp.rda")
+load("../iMSMS_round2_metagenomics/results/metabolon/rdata/group1.rda")
+
+
+dietseqmeta.comp = lapply(seqmeta.comp, function(x){
+  x = x[x$iMSMS_ID %in% dietseqmeta$host_subject_id,]
+  x
+})
+
+
+require(reshape)
+require(ggplot2)
+
+# remove natalizumab comparisons
+# names.rm = names(seqmeta.comp)[59:83]
+# names.rm = names.rm[!grepl("Natalizumab",names.rm )]
+
+  for(name in names(dietseqmeta.comp)){
+    feature = "diet_nutrition"
+  if(name %in% group1){
+      dir.out =  "Linear_regression_diet/MS"
+    if(grepl("HHC", name)){
+      fixed.var1 = "disease"
+    levels = c("Control", "MS")
+    house.adjust  =T
+    }else{
+    fixed.var1 = "treatment_status"
+    levels = c("Untreated", "Treated")
+    house.adjust  =F
+    }
+  }else if (name %in% group2){
+    dir.out =  "Linear_regression_diet/disease_course"
+    if(grepl("HHC", name)){
+          fixed.var1 = "disease"
+    levels =c("Control","MS")
+     house.adjust =T
+    }else if(grepl("RRMS",name) & grepl("PMS",name)){
+      fixed.var1 = "pms"
+    levels =c("RRMS","PMS")
+     house.adjust =F
+    }else{
+            fixed.var1 = "treatment_status"
+    levels =c("Untreated","Treated")
+     house.adjust =F
+    }
+  }else if (name %in% c(group3,group5)){
+    if(name %in% group3){
+      dir.out =  "Linear_regression_diet/treatment_allsamples"
+    }else if(name %in% group5){
+      dir.out =  "Linear_regression_diet/treatment_RRMSonly"
+    }
+    if(grepl("HHC",name)){
+       fixed.var1 = "treatments"
+    levels = c("Control", unlist(strsplit(name, "_"))[1])
+     house.adjust =T
+    }else{
+      fixed.var1 = "treatments"
+    levels = unlist(strsplit(name, "_"))
+    levels = levels[!levels %in% c("RRMS", "PMS")]
+    levels= rev(levels)
+    if("untreated" %in% levels){
+      levels = gsub("untreated", "Untreated", levels)
+    }
+     house.adjust =F
+    }
+  }else if(name %in% c(group4, group6)){
+     if(name %in% group4){
+      dir.out =  "Linear_regression_diet/administration_allsamples"
+    }else{
+      dir.out =  "Linear_regression_diet/administration_RRMSonly"
+    }
+    fixed.var1 = "administration"
+    if(grepl("HHC", name)){
+     levels = c("Control",unlist(strsplit(name, "_"))[1]) 
+     house.adjust =T
+    }else {
+    levels = unlist(strsplit(name, "_"))
+    levels = levels[levels!="RRMS"]
+    levels= rev(levels)
+    if("untreated" %in% levels){
+      levels = gsub("untreated", "Untreated", levels)
+    }
+      house.adjust =F
+    }
+  }
+  if(!dir.exists(dir.out)){
+    dir.create(dir.out)
+  }
+  metares = linear_regression(rel.data = dietdata,arcsin.transform =F, filter =F, fixed.var = c(fixed.var1,"sex", "age", "bmi"),levels =levels,house.adjust =house.adjust, site =T, condition =dietseqmeta.comp[[name]], taxa =feature, out.file = paste(paste(dir.out, "/Linear_coefficient", sep=""), feature, name, "_sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+  # metares= merge(metares, id.table, by = "taxonomy")
+  #WriteXLS(metares, paste(paste(dir.out, "/Linear_coefficient", sep=""), feature, name, "_sex_age_bmi_fixed_house_site_random.xlsx",sep="_"))
+  
+  strs = unlist(strsplit(colnames(metares)[1], "_"))
+  if(length(strs) ==2){
+    index = strs[2]
+  }else{
+    index = paste(strs[2:length(strs)], collapse ="_")
+  }
+  
+  colnames(metares) = gsub(index, "diseaseMS",colnames(metares) )
+
+      sign1 = metares[metares$fdr_diseaseMS <= 0.05, ]
+        padjust1 =TRUE
+        if(nrow(sign1) > 30){
+          sign1 = sign1[sign1[,1] <= quantile(metares[,1],seq(0,1,0.05))["5%"] | sign1[,1] >= quantile(metares[,1],seq(0,1,0.05))["95%"], ]
+           prefix1 = "fdr_coef_quantile5"
+        }else{
+          prefix1 = "fdr"
+        }
+        
+        if(nrow(sign1) <= 5){
+        height1 = (nrow(sign1) +1)*0.6
+        width1 =10
+      }else if(nrow(sign1) <=15) {
+        height1 = nrow(sign1)*0.4
+        width1 = 11
+      }else{
+        height1 = nrow(sign1)*0.2
+        width1= 11
+      }
+        
+        sign2 = metares[metares$Pr_diseaseMS <= 0.05, ]
+       # sign2 = sign2[sign2[,1] <= quantile(metares[,1],seq(0,1,0.05))["5%"] | sign2[,1] >= quantile(metares[,1],seq(0,1,0.05))["95%"], ]
+        padjust2 =FALSE
+       # prefix2 = "P0.05_coef_quantile5"
+         prefix2 = "P0.05"
+         if(nrow(sign2) <= 5){
+        height2 = (nrow(sign2) +1)*0.6
+        width2 =10
+      }else if(nrow(sign2) <=15) {
+        height2 = nrow(sign2)*0.4
+        width2 = 11
+      }else{
+        height2 = nrow(sign2)*0.2
+        width2= 11
+      }
+        sign3 = metares[metares$fdr_diseaseMS <= 0.1, ]
+        padjust3 =TRUE
+        if(nrow(sign3) > 30){
+          sign3 = sign3[sign3[,1] <= quantile(metares[,1],seq(0,1,0.05))["5%"] | sign1[,1] >= quantile(metares[,1],seq(0,1,0.05))["95%"], ]
+           prefix3 = "fdr0.1_coef_quantile5"
+        }else{
+          prefix3 = "fdr0.1"
+        }
+        
+        if(nrow(sign3) <= 5){
+        height3 = (nrow(sign3) +1)*0.6
+        width3 =10
+      }else if(nrow(sign3) <=15) {
+        height3 = nrow(sign3)*0.4
+        width3 = 11
+      }else{
+        height3 = nrow(sign3)*0.2
+        width3= 11
+      }
+        sign.list = list(sign1,sign2, sign3)
+        prefixs= c(prefix1, prefix2, prefix3)
+        widths =c(width1, width2, width3)
+        heights= c(height1,height2, height3)
+        padjusts = c(padjust1, padjust2, padjust3)
+        
+        for(i in 1:length(sign.list)){
+          if(nrow(sign.list[[i]]) > 0){
+             linear_regression_plot(sign.list[[i]], taxa =feature, disease.only = T, group ="disease",order.group = "MS",col.disease = disease.cols,out.file =paste(paste(dir.out, "/Linear_coefficient",sep=""), feature,name,prefixs[i], "_random_effect.pdf",sep="_"),width =widths[i],height =heights[i],taxaname = F, padjust = padjusts[i])
+          }
+        }
+}
+```
+
+
+
